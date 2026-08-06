@@ -1,4 +1,4 @@
-kimport os
+import os
 
 # --- 5. INICIO GENERAL ---
 from threading import Thread
