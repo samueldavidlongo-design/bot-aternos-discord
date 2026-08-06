@@ -1,9 +1,12 @@
-import os
+kimport os
+
+# --- 5. INICIO GENERAL ---
 from threading import Thread
 import time
 from flask import Flask
 import discord
 from discord.ext import commands
+import requests
 
 # --- 1. CONFIGURACIÓN DEL SERVIDOR WEB (TRUCO 24/7 PARA RENDER) ---
 app = Flask("")
@@ -29,12 +32,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Credenciales desde las Variables de Entorno de Render
-ATERNOS_USER = os.getenv("ATERNOS_USER")
-ATERNOS_PASS = os.getenv("ATERNOS_PASS")
-ATERNOS_SERVER_URL = os.getenv(
-    "ATERNOS_URL", "https://aternos.org/server/"
-)  # Tu enlace directo al panel
+# Variables de Entorno
+ATERNOS_SESSION = os.getenv("ATERNOS_SESSION")
+# Si no la configuras en Render, por defecto usará la IP que pongas abajo
+MINECRAFT_IP = os.getenv("MINECRAFT_IP", "tu_servidor.aternos.me")
+
+# Guardamos el momento exacto en que enciende el bot para calcular el Uptime
+BOT_START_TIME = time.time()
 
 
 @bot.event
@@ -42,117 +46,131 @@ async def on_ready():
   print(f"¡Bot conectado como {bot.user}!")
 
 
-# --- 3. COMANDO: !encender (Público y optimizado para Aternos) ---
+# --- 3. COMANDO: !encender (Mediante Cookies) ---
 @bot.command(name="encender")
 async def encender(ctx):
   await ctx.send(
-      f"🔄 **{ctx.author.name}**, intentando conectar con Aternos para encender"
-      " el servidor... Esto puede tardar unos segundos. ⏳"
+      f"🔄 **{ctx.author.name}**, enviando orden para encender el servidor"
+      " Aternos... ⏳"
   )
 
-  from selenium import webdriver
-  from selenium.webdriver.chrome.options import Options
-  from selenium.webdriver.chrome.service import Service
-  from selenium.webdriver.common.by import By
-  from selenium.webdriver.support import expected_conditions as EC
-  from selenium.webdriver.support.ui import WebDriverWait
-  from webdriver_manager.chrome import ChromeDriverManager
-  from webdriver_manager.core.os_manager import ChromeType
-
-  options = Options()
-  options.add_argument("--headless")  # Obligatorio para servidores en la nube
-  options.add_argument("--no-sandbox")
-  options.add_argument("--disable-dev-shm-usage")
-  options.add_argument("--disable-gpu")
-  options.add_argument("--window-size=1920,1080")
-  # Añadimos un user-agent genérico para evitar que Aternos bloquee el navegador automatizado
-  options.add_argument(
-      "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-  )
-
-  driver = None
-  try:
-    # Inicializar Chromium compatible con Linux en Render
-    driver = webdriver.Chrome(
-        service=Service(
-            ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
-        ),
-        options=options,
-    )
-
-    # 1. Ir a la página de login de Aternos
-    driver.get("https://aternos.org/go/")
-    time.sleep(3)
-
-    # Si hay campos de texto para usuario y contraseña, los rellenamos automáticamente
-    try:
-      username_input = WebDriverWait(driver, 5).until(
-          EC.presence_of_element_located((By.ID, "user"))
-      )
-      password_input = driver.find_element(By.ID, "password")
-      login_button = driver.find_element(By.ID, "login")
-
-      if ATERNOS_USER and ATERNOS_PASS:
-        username_input.send_keys(ATERNOS_USER)
-        password_input.send_keys(ATERNOS_PASS)
-        login_button.click()
-        time.sleep(5)  # Esperar a que procese el inicio de sesión
-    except Exception:
-      # Si ya venía con sesión guardada o cookies, continúa directo
-      pass
-
-    # 2. Entrar al panel del servidor específico
-    driver.get(ATERNOS_SERVER_URL)
-    
-    # 3. Esperar y hacer clic en el botón de encender ("start")
-    start_button = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable((By.ID, "start"))
-    )
-    start_button.click()
-
+  if not ATERNOS_SESSION:
     await ctx.send(
-        f"✅ ¡Orden enviada con éxito por **{ctx.author.name}**! El servidor"
-        " Aternos se está encendiendo. 🚀"
+        "❌ Error: Falta configurar la variable de entorno `ATERNOS_SESSION`"
+        " en Render."
     )
+    return
+
+  try:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Cookie": ATERNOS_SESSION,
+        "Referer": "https://aternos.org/server/",
+    }
+
+    response = requests.get(
+        "https://aternos.org/panel/ajax/start.php", headers=headers
+    )
+
+    if response.status_code == 200:
+      await ctx.send(
+          f"✅ ¡Orden enviada con éxito por **{ctx.author.name}**! El servidor"
+          " se está encendiendo 🚀\n*En un par de minutos estará disponible.*"
+      )
+    else:
+      await ctx.send(
+          "⚠️ Aternos respondió, pero hubo un problema (posiblemente la cookie"
+          f" expiró). Código: `{response.status_code}`"
+      )
+
+  except Exception as e:
+    await ctx.send(f"❌ Ocurrió un error de conexión:\n`{e}`")
+
+
+# --- 4. COMANDO: !status (Información detallada de Minecraft) ---
+@bot.command(name="status")
+async def status(ctx):
+  await ctx.send("🔎 Consultando con los satélites de Minecraft... 📡")
+
+  # 1. Calcular Uptime del bot (Tiempo activo)
+  uptime_seconds = int(time.time() - BOT_START_TIME)
+  hours, remainder = divmod(uptime_seconds, 3600)
+  minutes, seconds = divmod(remainder, 60)
+  uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+  try:
+    # 2. Consultar la API pública para saber el estado real del server
+    api_url = f"https://api.mcstatus.io/v2/status/java/{MINECRAFT_IP}"
+    res = requests.get(api_url, timeout=5).json()
+
+    if res.get("online"):
+      # --- SERVIDOR ONLINE ---
+      embed = discord.Embed(
+          title=f"🎮 Servidor Online: {MINECRAFT_IP}",
+          description=(
+              "¡El mundo está abierto y listo para la aventura! ⚔️"
+          ),
+          color=discord.Color.green(),
+      )
+
+      # Jugadores y Ping
+      online_players = res["players"]["online"]
+      max_players = res["players"]["max"]
+      ping = res.get("roundTripLatency", "N/A")
+      version = res.get("version", {}).get("name_clean", "Desconocida")
+
+      embed.add_field(
+          name="👥 Jugadores",
+          value=f"**{online_players}/{max_players}** en línea",
+          inline=True,
+      )
+      embed.add_field(
+          name="⚡ Ping Minecraft", value=f"**{ping} ms**", inline=True
+      )
+      embed.add_field(
+          name="📶 Ping del Bot",
+          value=f"**{round(bot.latency * 1000)} ms**",
+          inline=True,
+      )
+      embed.add_field(
+          name="📌 Versión", value=f"`{version}`", inline=False
+      )
+
+    else:
+      # --- SERVIDOR OFFLINE ---
+      embed = discord.Embed(
+          title="😴 El servidor está fuera de línea",
+          description=(
+              "💤 *El mundo de Minecraft está durmiendo profundamente...*\n\n👉"
+              " Escribe **`!encender`** para despabilar a Aternos y poner a"
+              " marchar el server."
+          ),
+          color=discord.Color.red(),
+      )
+      embed.add_field(
+          name="📶 Ping del Bot",
+          value=f"**{round(bot.latency * 1000)} ms**",
+          inline=True,
+      )
+
+    # Pie de página con el Uptime del servicio
+    embed.set_footer(
+        text=f"Bot activo en Render desde hace: {uptime_str} | IP:"
+        f" {MINECRAFT_IP}"
+    )
+    await ctx.send(embed=embed)
 
   except Exception as e:
     await ctx.send(
-        f"❌ Ocurrió un error al intentar encender el servidor:\n`{e}`"
+        f"❌ Ocurrió un error al intentar consultar el estado: `{e}`"
     )
-  finally:
-    if driver:
-      try:
-        driver.quit()
-      except:
-        pass
 
 
-# --- 4. COMANDO: !status ---
-@bot.command(name="status")
-async def status(ctx):
-  embed = discord.Embed(
-      title="📊 Estado del Servidor y Bot", color=discord.Color.green()
-  )
-  embed.add_field(
-      name="Estado del Bot", value="🟢 Online 24/7 (Render)", inline=False
-  )
-  embed.add_field(
-      name="Ping", value=f"{round(bot.latency * 1000)}ms", inline=True
-  )
-  embed.add_field(
-      name="Uso", value="Usa `!encender` para prender el Aternos", inline=False
-  )
-
-  await ctx.send(embed=embed)
-
-
-# --- 5. INICIO GENERAL ---
 if __name__ == "__main__":
-  # Arrancar servidor web para Flask (Truco de Render)
   keep_alive()
-
-  # Arrancar el bot de Discord
   TOKEN = os.getenv("DISCORD_TOKEN")
   if TOKEN:
     bot.run(TOKEN)
