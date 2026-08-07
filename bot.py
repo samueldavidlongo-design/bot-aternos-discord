@@ -1,21 +1,19 @@
 import os
 import time
-import re
 import asyncio
 from threading import Thread
 from flask import Flask
 import discord
 from discord.ext import commands
 import requests
-from bs4 import BeautifulSoup
-from curl_cffi import requests as async_requests
+from playwright.async_api import async_playwright
 
 # --- 1. MANTENER VIVO EN RENDER 24/7 ---
 app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡Zundabot Activo con curl_cffi! 🟢🌱"
+    return "¡Zundabot Activo con Playwright! 🟢🌱"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -33,9 +31,60 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 BOT_START_TIME = time.time()
 ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110)
 
-# --- 3. MOTOR DE ENCENDIDO CON CURL_CFFI ---
-async def encender_aternos_curl(status_callback=None):
+# --- HELPER: RESOLVER TURNSTILE EN PLAYWRIGHT ---
+async def intentar_resolver_turnstile(page):
+    try:
+        # 1. Buscar frame de Cloudflare Turnstile
+        for frame in page.frames:
+            if "cloudflare" in frame.url or "turnstile" in frame.url:
+                checkbox = await frame.query_selector("input[type='checkbox'], .mark, #challenge-stage")
+                if checkbox:
+                    await checkbox.click()
+                    await asyncio.sleep(2)
+                    return True
+        
+        # 2. Si es un selector general en la página principal
+        turnstile_element = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
+        if turnstile_element:
+            box = await turnstile_element.bounding_box()
+            if box:
+                # Clic en el centro de la casilla Turnstile
+                await page.mouse.click(box["x"] + 35, box["y"] + (box["height"] / 2))
+                await asyncio.sleep(2)
+                return True
+    except Exception:
+        pass
+    return False
+
+# --- HELPER: LIMPIADOR DE POPUPS Y ADBLOCK ---
+async def limpiar_popups_y_adblock(page):
+    inicio = time.time()
+    while time.time() - inicio < 4:
+        try:
+            btn_adblock = await page.query_selector(".btn-continue, #btn-continue, .fc-button-label, #accept-choices, .btn-accept")
+            if btn_adblock and await btn_adblock.is_visible():
+                await btn_adblock.click()
+                await asyncio.sleep(1)
+
+            await page.evaluate("""
+                () => {
+                    const selectors = [
+                        '.adblock-overlay', '.fc-ab-root', '#adblock-overlay', 
+                        '.modal-backdrop', '.adblock-box', '.adblock-notice'
+                    ];
+                    selectors.forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => el.remove());
+                    });
+                }
+            """)
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+# --- 3. NAVEGACIÓN PLAYWRIGHT ---
+async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
+    user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN")
 
     async def reportar(texto):
@@ -46,75 +95,113 @@ async def encender_aternos_curl(status_callback=None):
                 pass
 
     if not session_cookie:
-        return False, "Falta la variable `ATERNOS_SESSION` en las variables de entorno de Render. ❌"
+        return False, "Falta la variable `ATERNOS_SESSION` en Render. ❌", None
 
-    await reportar("🟢 Conectando con Aternos mediante bypass TLS (curl_cffi)... 🍃")
+    await reportar("🟢 Inicializando el navegador Zundabot... 🍃")
 
-    # Simulamos la huella TLS exacta de Chrome en Windows
-    session = async_requests.AsyncSession(impersonate="chrome120")
-    session.cookies.set("ATERNOS_SESSION", session_cookie, domain=".aternos.org")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--disable-gpu"
+            ]
+        )
+        
+        context = await browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1366, "height": 768},
+            locale="es-ES"
+        )
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Referer": "https://aternos.org/servers/",
-    }
+        await context.add_cookies([{
+            "name": "ATERNOS_SESSION",
+            "value": session_cookie,
+            "domain": ".aternos.org",
+            "path": "/"
+        }])
 
-    try:
-        url_panel = f"https://aternos.org/server/{server_id}/"
-        await reportar("🌱 Solicitando acceso al panel del servidor...")
+        page = await context.new_page()
 
-        response = await session.get(url_panel, headers=headers, timeout=20)
+        # Stealth JS Script
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en-US', 'en']});
+            window.chrome = { runtime: {} };
+        """)
 
-        if response.status_code == 403 or "Just a moment" in response.text or "Verificación de seguridad" in response.text:
-            return False, "Cloudflare bloqueó el acceso. La sesión expiró o la IP fue restringida temporalmente."
+        screenshot_path = "error_screenshot.png"
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        try:
+            await reportar("🌱 Conectando con Aternos...")
+            target_url = f"https://aternos.org/server/{server_id}/"
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
 
-        # Buscar el token SEC que exige Aternos para ejecutar acciones AJAX
-        sec_token = None
-        scripts = soup.find_all("script")
-        for script in scripts:
-            if script.string and "SEC" in script.string:
-                match = re.search(r'SEC\s*=\s*["\']([^"\']+)["\']', script.string)
-                if match:
-                    sec_token = match.group(1)
+            await reportar("🛡️ Verificando y superando Cloudflare... ⏳")
+            
+            # Reintentar interactuar con Turnstile durante unos segundos
+            for _ in range(10):
+                title = await page.title()
+                if "Un momento" not in title and "Just a moment" not in title and title != "":
                     break
+                await intentar_resolver_turnstile(page)
+                await asyncio.sleep(2)
 
-        if not sec_token:
-            # Si no hay token SEC pero sí cargó, verificamos si ya está encendido
-            if "statuslabel-online" in response.text or "statuslabel-starting" in response.text:
-                return True, "¡El servidor ya se encuentra en proceso de encendido o ya está en línea! 🟢"
-            return False, "No se pudo extraer el token de seguridad (`SEC`) de la página. Verifica que `ATERNOS_SESSION` sea válida."
+            await reportar("🧹 Preparando la interfaz...")
+            await limpiar_popups_y_adblock(page)
 
-        # Extraer el ID único del servidor si cambia en el DOM
-        server_sec_id = server_id
-        sec_match = re.search(r'AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', response.text)
-        if sec_match:
-            server_sec_id = sec_match.group(1)
+            page_title = await page.title()
 
-        await reportar("⚡ Enviando señal de encendido a Aternos...")
+            # 1. Comprobar si ya se está encendiendo o está Online
+            estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
+            if estado_encendido:
+                return True, "¡El servidor ya se encuentra en proceso de encendido o ya está en línea! 🟢", None
 
-        # Enviar la petición POST directa de inicio
-        ajax_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}&SEC={sec_token}"
-        ajax_headers = headers.copy()
-        ajax_headers.update({
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": url_panel
-        })
+            # 2. Intentar buscar botón #start
+            await reportar("⚡ Localizando el botón de encendido (`#start`)...")
+            start_exists = await page.evaluate("() => !!document.querySelector('#start')")
+            
+            if start_exists:
+                await reportar("🟢 Presionando el botón de inicio...")
+                await page.evaluate("""
+                    () => {
+                        document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
+                        const btn = document.querySelector('#start');
+                        if (btn) btn.click();
+                    }
+                """)
+                await asyncio.sleep(2)
 
-        ajax_response = await session.get(ajax_url, headers=ajax_headers, timeout=15)
-        res_json = ajax_response.json()
+                try:
+                    await page.evaluate("""
+                        () => {
+                            const confirm = document.querySelector('#confirm, .btn-accept, .btn-confirm');
+                            if (confirm) confirm.click();
+                        }
+                    """)
+                except Exception:
+                    pass
 
-        if res_json.get("success"):
-            return True, "¡Solicitud enviada con éxito! BelmoSMP se está encendiendo. 🟢🎮"
-        else:
-            error_msg = res_json.get("error", "Error desconocido devuelto por Aternos.")
-            return False, f"Aternos no procesó la orden: `{error_msg}`"
+                return True, "¡Solicitud enviada correctamente! BelmoSMP se está encendiendo. 🟢🎮", None
 
-    except Exception as e:
-        return False, f"Error en la conexión con Aternos: `{str(e)}`"
+            # Si vuelve a fallar, tomar captura
+            await page.screenshot(path=screenshot_path, full_page=True)
+            return False, f"No se encontró el botón. Título de página: **'{page_title}'**.", screenshot_path
+
+        except Exception as e:
+            try:
+                await page.screenshot(path=screenshot_path, full_page=True)
+            except Exception:
+                screenshot_path = None
+            return False, f"Error durante la conexión: `{str(e)}`", screenshot_path
+        
+        finally:
+            await browser.close()
 
 @bot.event
 async def on_ready():
@@ -131,12 +218,22 @@ async def encender(ctx):
         except Exception:
             pass
 
-    success, result_message = await encender_aternos_curl(status_callback=actualizar_mensaje)
+    success, result_message, screenshot_file = await encender_aternos_playwright(status_callback=actualizar_mensaje)
 
     if success:
         await msg.edit(content=f"🚀 **[Zundabot]** {result_message} 🍃")
     else:
         await msg.edit(content=f"❌ **[Zundabot Error]:** {result_message}")
+        
+        if screenshot_file and os.path.exists(screenshot_file):
+            try:
+                await ctx.send(
+                    content="📸 **[Zundabot Capture]** Captura del estado actual:",
+                    file=discord.File(screenshot_file)
+                )
+                os.remove(screenshot_file)
+            except Exception as e:
+                print(f"Error al enviar captura: {e}")
 
 # --- 5. COMANDO: !status ---
 @bot.command(name="status")

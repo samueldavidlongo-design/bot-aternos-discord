@@ -2,6 +2,6 @@ discord.py
 flask
 cloudscraper
 requests
-curl_cffi
+playwright
 beautifulsoup4
 pillow
