@@ -14,7 +14,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡Zundabot Activo con Proxies Públicos! 🟢🌱"
+    return "¡Zundabot Activo con Bypass Mejorado! 🟢🌱"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -35,7 +35,7 @@ ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110)
 # --- HELPER: OBTENER LISTA DE PROXIES GRATUITOS ---
 def obtener_proxies_gratuitos():
     urls_fuente = [
-        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=4000&country=all&ssl=all&anonymity=anonymous,elite",
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=anonymous,elite",
         "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
     ]
     
@@ -50,11 +50,10 @@ def obtener_proxies_gratuitos():
         except Exception:
             continue
 
-    # Mezclar la lista para probar distintos nodos
     random.shuffle(proxies_encontrados)
-    return proxies_encontrados[:10]  # Tomar los primeros 10 candidatos
+    return proxies_encontrados[:12]  # Tomar candidatos
 
-# --- HELPER: RESOLVER TURNSTILE EN PLAYWRIGHT ---
+# --- HELPER: RESOLVER TURNSTILE ---
 async def intentar_resolver_turnstile(page):
     try:
         for frame in page.frames:
@@ -76,7 +75,7 @@ async def intentar_resolver_turnstile(page):
         pass
     return False
 
-# --- HELPER: LIMPIADOR DE POPUPS Y ADBLOCK ---
+# --- HELPER: LIMPIADOR DE POPUPS ---
 async def limpiar_popups_y_adblock(page):
     inicio = time.time()
     while time.time() - inicio < 4:
@@ -101,7 +100,7 @@ async def limpiar_popups_y_adblock(page):
             pass
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN PLAYWRIGHT CON ROTACIÓN DE PROXIES ---
+# --- 3. NAVEGACIÓN PLAYWRIGHT ---
 async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
     user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
@@ -117,11 +116,10 @@ async def encender_aternos_playwright(status_callback=None):
     if not session_cookie:
         return False, "Falta la variable `ATERNOS_SESSION` en Render. ❌", None
 
-    await reportar("🟢 Buscando proxies públicos disponibles... 🌐")
+    await reportar("🟢 Buscando proxies y preparando ruta... 🌐")
     
     lista_proxies = obtener_proxies_gratuitos()
-    # Si no consigue proxies, intenta directo sin proxy como respaldo
-    lista_proxies.append(None)
+    lista_proxies.append(None) # Respaldo sin proxy
 
     screenshot_path = "error_screenshot.png"
 
@@ -139,8 +137,8 @@ async def encender_aternos_playwright(status_callback=None):
         )
 
         for i, proxy in enumerate(lista_proxies):
-            texto_proxy = f"`{proxy}`" if proxy else "Conexión Directa (Sin Proxy)"
-            await reportar(f"🔄 Intentando conexión {i+1}/{len(lista_proxies)} usando {texto_proxy}... 🍃")
+            texto_proxy = f"`{proxy}`" if proxy else "Conexión Directa"
+            await reportar(f"🔄 Ruta {i+1}/{len(lista_proxies)} ({texto_proxy}). Esperando verificación... 🍃")
 
             context_args = {
                 "user_agent": user_agent,
@@ -162,7 +160,7 @@ async def encender_aternos_playwright(status_callback=None):
 
                 page = await context.new_page()
 
-                # Stealth JS
+                # Stealth JS avanzado
                 await page.add_init_script("""
                     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                     Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
@@ -171,18 +169,36 @@ async def encender_aternos_playwright(status_callback=None):
                 """)
 
                 target_url = f"https://aternos.org/server/{server_id}/"
-                
-                # Intentar cargar con tiempo límite ajustado por si el proxy es lento
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
-                # Verificar si Cloudflare cedió o si hay que interactuar
-                for _ in range(6):
+                # --- BUCLE EXTENDIDO DE ESPERA Y TELEMETRÍA HUMANA ---
+                # Esperamos hasta 35 segundos para que Cloudflare termine de "Verificar"
+                verificado_con_exito = False
+                for intento_cf in range(14):
                     title = await page.title()
-                    if "Un momento" not in title and "Just a moment" not in title and title != "":
+                    content_text = await page.content()
+                    
+                    # Si ya salió de la pantalla de verificación de Cloudflare
+                    if "Un momento" not in title and "Just a moment" not in title and "Verificando" not in content_text:
+                        verificado_con_exito = True
                         break
-                    await intentar_resolver_turnstile(page)
-                    await asyncio.sleep(2)
 
+                    # Mover el mouse de forma aleatoria para engañar la detección de bots
+                    try:
+                        await page.mouse.move(random.randint(200, 700), random.randint(200, 500))
+                    except Exception:
+                        pass
+
+                    await intentar_resolver_turnstile(page)
+                    await asyncio.sleep(2.5)
+
+                if not verificado_con_exito:
+                    # Si sigue atascado en verificando, cerramos este contexto y pasamos al siguiente proxy
+                    await page.screenshot(path=screenshot_path, full_page=True)
+                    await context.close()
+                    continue
+
+                await reportar("🧹 Cloudflare superado. Limpiando interfaz...")
                 await limpiar_popups_y_adblock(page)
 
                 # 1. Comprobar si ya está encendido o en cola
@@ -192,10 +208,11 @@ async def encender_aternos_playwright(status_callback=None):
                     return True, "¡El servidor ya se encuentra en proceso de encendido o en línea! 🟢", None
 
                 # 2. Localizar botón #start
+                await reportar("⚡ Buscando el botón de encendido...")
                 start_exists = await page.evaluate("() => !!document.querySelector('#start')")
                 
                 if start_exists:
-                    await reportar("🟢 ¡Conexión limpia! Presionando el botón de inicio...")
+                    await reportar("🟢 ¡Botón encontrado! Presionando inicio...")
                     await page.evaluate("""
                         () => {
                             document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
@@ -216,14 +233,12 @@ async def encender_aternos_playwright(status_callback=None):
                         pass
 
                     await browser.close()
-                    return True, "¡Solicitud enviada correctamente! BelmoSMP se está encendiendo. 🟢🎮", None
+                    return True, "¡Solicitud enviada con éxito! BelmoSMP se está encendiendo. 🟢🎮", None
 
-                # Si el proxy no logró llegar al botón, guarda la captura por si acaso y cierra el contexto para el siguiente
                 await page.screenshot(path=screenshot_path, full_page=True)
                 await context.close()
 
             except Exception:
-                # Si el proxy está muerto o da timeout, salta al siguiente silenciosamente
                 try:
                     await context.close()
                 except Exception:
@@ -231,7 +246,7 @@ async def encender_aternos_playwright(status_callback=None):
                 continue
 
         await browser.close()
-        return False, "Ninguno de los proxies logró evadir a Cloudflare en este intento. Prueba lanzar `!encender` de nuevo en un minuto.", screenshot_path
+        return False, "Cloudflare mantuvo la verificación activa en todas las rutas probadas. Vuelve a intentar en un momento.", screenshot_path
 
 @bot.event
 async def on_ready():
@@ -240,7 +255,7 @@ async def on_ready():
 # --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    msg = await ctx.send(f"🟢 **[Zundabot]** Entendido **{ctx.author.display_name}**, buscando ruta para iniciar... Por favor espera. 🍃")
+    msg = await ctx.send(f"🟢 **[Zundabot]** Entendido **{ctx.author.display_name}**, buscando ruta y superando seguridad... Por favor espera. 🍃")
 
     async def actualizar_mensaje(texto_nuevo):
         try:
