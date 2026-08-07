@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN HIPER-OPTIMIZADA (AHORRA 70% DE RAM) ---
+# --- 3. NAVEGACIÓN HIPER-OPTIMIZADA Y ROBUSTA ---
 async def encender_aternos_playwright():
     user = os.getenv("ATERNOS_USER")
     password = os.getenv("ATERNOS_PASSWORD")
@@ -39,7 +39,6 @@ async def encender_aternos_playwright():
         return False, "Faltan las variables `ATERNOS_USER` o `ATERNOS_PASSWORD` en Render."
 
     async with async_playwright() as p:
-        # Banderas de Chromium para consumo mínimo de RAM
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -59,9 +58,9 @@ async def encender_aternos_playwright():
         )
         page = await context.new_page()
 
-        # BLOQUEAR IMÁGENES, ESTILOS Y FUENTES (CERO CONSUMO EXTRA)
+        # Bloqueo de multimedia/fuentes (mantiene el uso de RAM bajo)
         async def block_resources(route):
-            if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+            if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
             else:
                 await route.continue_()
@@ -69,25 +68,35 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Entrar a la página de login
+            # 1. Ir a la página de login
             await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=45000)
 
-            # 2. Llenar usuario y clave
-            await page.fill("input.user", user)
-            await page.fill("input.password", password)
-            await page.click("button.btn-main")
+            # 2. Esperar y seleccionar el campo de usuario con múltiples alternativas
+            user_input = await page.wait_for_selector("input.user, input[name='user'], input[type='text']", timeout=25000)
+            password_input = await page.wait_for_selector("input.password, input[name='password'], input[type='password']", timeout=25000)
 
-            # 3. Esperar que redirija al panel del servidor
+            if not user_input or not password_input:
+                return False, "No se encontraron los campos de entrada de inicio de sesión."
+
+            await user_input.fill(user)
+            await password_input.fill(password)
+
+            # 3. Presionar el botón de Login
+            login_btn = await page.wait_for_selector("button.btn-main, button[type='submit'], .login-button", timeout=10000)
+            if login_btn:
+                await login_btn.click()
+
+            # 4. Esperar redirección al panel
             await page.wait_for_url("**/server/**", timeout=30000)
 
-            # 4. Hacer clic en el botón de encendido
-            start_btn = await page.wait_for_selector("#start", timeout=15000)
+            # 5. Hacer clic en encender
+            start_btn = await page.wait_for_selector("#start", timeout=20000)
             if start_btn:
                 await start_btn.click()
                 
-                # Confirmación opcional (EULA/Notificaciones)
+                # Manejo de confirmaciones (EULA / Notificaciones)
                 try:
-                    confirm_btn = await page.wait_for_selector("#confirm", timeout=5000)
+                    confirm_btn = await page.wait_for_selector("#confirm, .btn-accept", timeout=5000)
                     if confirm_btn:
                         await confirm_btn.click()
                 except Exception:
@@ -101,7 +110,6 @@ async def encender_aternos_playwright():
             return False, f"Error durante la navegación: {str(e)}"
         
         finally:
-            # Cierre obligatorio del navegador para liberar memoria RAM al instante
             await browser.close()
 
 @bot.event
