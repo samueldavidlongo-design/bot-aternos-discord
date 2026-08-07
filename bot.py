@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN HIPER-OPTIMIZADA Y ROBUSTA ---
+# --- 3. NAVEGACIÓN COMPLETA (LOGIN -> SELECCIONAR SERVER -> ENCENDER) ---
 async def encender_aternos_playwright():
     user = os.getenv("ATERNOS_USER")
     password = os.getenv("ATERNOS_PASSWORD")
@@ -49,16 +49,19 @@ async def encender_aternos_playwright():
                 "--no-first-run",
                 "--no-zygote",
                 "--single-process",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled"
             ]
         )
         
+        # Simular una pantalla de PC de escritorio real
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720}
         )
         page = await context.new_page()
 
-        # Bloqueo de multimedia/fuentes (mantiene el uso de RAM bajo)
+        # Bloqueo de multimedia/fuentes para mantener baja la RAM
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -68,33 +71,38 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Ir a la página de login
+            # 1. Ir a la página de login directa
             await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2)  # Dar tiempo a que carguen los scripts de la página
 
-            # 2. Esperar y seleccionar el campo de usuario con múltiples alternativas
-            user_input = await page.wait_for_selector("input.user, input[name='user'], input[type='text']", timeout=25000)
-            password_input = await page.wait_for_selector("input.password, input[name='password'], input[type='password']", timeout=25000)
-
-            if not user_input or not password_input:
-                return False, "No se encontraron los campos de entrada de inicio de sesión."
+            # 2. Llenar credenciales
+            user_input = await page.wait_for_selector(".user", timeout=25000)
+            password_input = await page.wait_for_selector(".password", timeout=25000)
 
             await user_input.fill(user)
             await password_input.fill(password)
 
-            # 3. Presionar el botón de Login
-            login_btn = await page.wait_for_selector("button.btn-main, button[type='submit'], .login-button", timeout=10000)
+            # 3. Hacer clic en Login
+            login_btn = await page.wait_for_selector(".btn-main", timeout=10000)
             if login_btn:
                 await login_btn.click()
 
-            # 4. Esperar redirección al panel
-            await page.wait_for_url("**/server/**", timeout=30000)
+            # 4. PASO CLAVE: Si cae en la lista de servidores (/servers/), seleccionar el servidor
+            await page.wait_for_url("**/server**", timeout=30000)
+            
+            if "servers" in page.url:
+                # Hacer clic en la tarjeta del servidor para ingresar a su panel
+                server_card = await page.wait_for_selector(".server-body, .servercard", timeout=15000)
+                if server_card:
+                    await server_card.click()
+                    await page.wait_for_url("**/server/", timeout=20000)
 
-            # 5. Hacer clic en encender
+            # 5. Ya en el panel del servidor (/server/), presionar el botón de inicio
             start_btn = await page.wait_for_selector("#start", timeout=20000)
             if start_btn:
                 await start_btn.click()
                 
-                # Manejo de confirmaciones (EULA / Notificaciones)
+                # Manejo de cartel de confirmación/EULA/Notificaciones si aparece
                 try:
                     confirm_btn = await page.wait_for_selector("#confirm, .btn-accept", timeout=5000)
                     if confirm_btn:
@@ -104,7 +112,7 @@ async def encender_aternos_playwright():
 
                 return True, "¡Servidor encendido con éxito!"
 
-            return False, "No se encontró el botón `#start` en el panel."
+            return False, "No se encontró el botón `#start` dentro del panel."
 
         except Exception as e:
             return False, f"Error durante la navegación: {str(e)}"
