@@ -29,12 +29,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-def solicitar_via_scrapedo(target_url, cookie_val):
-    """Petición a Aternos a través de Scrape.do"""
-    # Busca 'scrape_api_key' o 'SCRAPER_API_KEY' o usa la clave por defecto
+def solicitar_via_scrapedo(target_url, cookie_val, render_js=True):
+    """Petición a Aternos a través de Scrape.do con soporte de JS Rendering"""
     token = (
-        os.getenv("scrape_api_key") or 
         os.getenv("SCRAPER_API_KEY") or 
+        os.getenv("scrape_api_key") or 
         "9b8f9cb65f804598be72dd323213327559006dbca70"
     ).strip()
 
@@ -43,12 +42,15 @@ def solicitar_via_scrapedo(target_url, cookie_val):
         'url': target_url
     }
     
+    if render_js:
+        params['render'] = 'true'
+
     headers = {
         'Cookie': f"ATERNOS_SESSION={cookie_val}" if "ATERNOS_SESSION=" not in cookie_val else cookie_val,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
     }
     
-    response = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=35)
+    response = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=45)
     return response
 
 @bot.event
@@ -58,7 +60,7 @@ async def on_ready():
 # --- 3. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    await ctx.send(f"Entendido! **{ctx.author.display_name}**, prendiendo el server BelmoSMP... ⚡")
+    await ctx.send(f"Entendido! **{ctx.author.display_name}**, procesando encendido con renderizado de Aternos... ⚡")
 
     session_cookie = os.getenv("ATERNOS_SESSION")
     if not session_cookie:
@@ -66,32 +68,42 @@ async def encender(ctx):
         return
 
     try:
-        # Paso 1: Leer el panel de Aternos vía Scrape.do
-        panel_res = solicitar_via_scrapedo("https://aternos.org/server/", session_cookie)
+        # Paso 1: Leer el panel de Aternos vía Scrape.do con Renderizado JS activado
+        panel_res = solicitar_via_scrapedo("https://aternos.org/server/", session_cookie, render_js=True)
 
         if panel_res.status_code == 401:
-            await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa tu API Key en https://dashboard.scrape.do/overview")
+            await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa tu API Key en el dashboard.")
             return
         elif panel_res.status_code != 200:
             await ctx.send(f"⚠️ **[Debug Error HTTP {panel_res.status_code}]:** Scrape.do / Aternos devolvió código de error.")
             return
 
+        html_text = panel_res.text
+
         # Extraer el token interno AJAX/SEC
         sec_match = (
-            re.search(r'window\.AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', panel_res.text) or
-            re.search(r'SEC\s*:\s*["\']([^"\']+)["\']', panel_res.text) or
-            re.search(r'AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', panel_res.text)
+            re.search(r'window\.AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', html_text) or
+            re.search(r'SEC\s*:\s*["\']([^"\']+)["\']', html_text) or
+            re.search(r'AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', html_text) or
+            re.search(r'head\s*=\s*["\']([^"\']+)["\']', html_text)
         )
 
         if not sec_match:
-            await ctx.send("⚠️ **[Debug]:** No se pudo extraer el token AJAX. Es posible que la cookie `ATERNOS_SESSION` haya caducado.")
+            # Diagnóstico: verificar si Aternos redirigió al Login por sesión inválida
+            is_login_page = "login" in html_text.lower() or "sign in" in html_text.lower()
+            if is_login_page:
+                await ctx.send("⚠️ **[Debug]:** Aternos redirigió a la página de login. La cookie `ATERNOS_SESSION` no fue aceptada como válida.")
+            else:
+                title_match = re.search(r'<title>(.*?)</title>', html_text, re.IGNORECASE)
+                page_title = title_match.group(1) if title_match else "Sin título"
+                await ctx.send(f"⚠️ **[Debug]:** No se encontró el token AJAX. Título recibido: `{page_title}`.")
             return
 
         sec_token = sec_match.group(1)
 
         # Paso 2: Enviar la orden de inicio a Aternos
         start_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}"
-        start_res = solicitar_via_scrapedo(start_url, session_cookie)
+        start_res = solicitar_via_scrapedo(start_url, session_cookie, render_js=False)
 
         if start_res.status_code == 200:
             try:
@@ -127,7 +139,6 @@ async def status(ctx):
     version = "Desconocida"
 
     try:
-        # Verificación precisa mediante la API de mcsrvstat.us
         res = requests.get(f"https://api.mcsrvstat.us/3/{minecraft_ip}", timeout=6).json()
         if res.get("online") is True:
             is_online = True
