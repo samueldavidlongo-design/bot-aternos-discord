@@ -1,6 +1,7 @@
 import os
 import time
 import asyncio
+import random
 from threading import Thread
 from flask import Flask
 import discord
@@ -13,7 +14,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡Zundabot Activo con Playwright! 🟢🌱"
+    return "¡Zundabot Activo con Proxies Públicos! 🟢🌱"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -31,10 +32,31 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 BOT_START_TIME = time.time()
 ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110)
 
+# --- HELPER: OBTENER LISTA DE PROXIES GRATUITOS ---
+def obtener_proxies_gratuitos():
+    urls_fuente = [
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=4000&country=all&ssl=all&anonymity=anonymous,elite",
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
+    ]
+    
+    proxies_encontrados = []
+    
+    for url in urls_fuente:
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                lineas = [line.strip() for line in res.text.split("\n") if line.strip() and ":" in line]
+                proxies_encontrados.extend(lineas)
+        except Exception:
+            continue
+
+    # Mezclar la lista para probar distintos nodos
+    random.shuffle(proxies_encontrados)
+    return proxies_encontrados[:10]  # Tomar los primeros 10 candidatos
+
 # --- HELPER: RESOLVER TURNSTILE EN PLAYWRIGHT ---
 async def intentar_resolver_turnstile(page):
     try:
-        # 1. Buscar frame de Cloudflare Turnstile
         for frame in page.frames:
             if "cloudflare" in frame.url or "turnstile" in frame.url:
                 checkbox = await frame.query_selector("input[type='checkbox'], .mark, #challenge-stage")
@@ -43,12 +65,10 @@ async def intentar_resolver_turnstile(page):
                     await asyncio.sleep(2)
                     return True
         
-        # 2. Si es un selector general en la página principal
         turnstile_element = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
         if turnstile_element:
             box = await turnstile_element.bounding_box()
             if box:
-                # Clic en el centro de la casilla Turnstile
                 await page.mouse.click(box["x"] + 35, box["y"] + (box["height"] / 2))
                 await asyncio.sleep(2)
                 return True
@@ -81,7 +101,7 @@ async def limpiar_popups_y_adblock(page):
             pass
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN PLAYWRIGHT ---
+# --- 3. NAVEGACIÓN PLAYWRIGHT CON ROTACIÓN DE PROXIES ---
 async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
     user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
@@ -97,7 +117,13 @@ async def encender_aternos_playwright(status_callback=None):
     if not session_cookie:
         return False, "Falta la variable `ATERNOS_SESSION` en Render. ❌", None
 
-    await reportar("🟢 Inicializando el navegador Zundabot... 🍃")
+    await reportar("🟢 Buscando proxies públicos disponibles... 🌐")
+    
+    lista_proxies = obtener_proxies_gratuitos()
+    # Si no consigue proxies, intenta directo sin proxy como respaldo
+    lista_proxies.append(None)
+
+    screenshot_path = "error_screenshot.png"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -111,97 +137,101 @@ async def encender_aternos_playwright(status_callback=None):
                 "--disable-gpu"
             ]
         )
-        
-        context = await browser.new_context(
-            user_agent=user_agent,
-            viewport={"width": 1366, "height": 768},
-            locale="es-ES"
-        )
 
-        await context.add_cookies([{
-            "name": "ATERNOS_SESSION",
-            "value": session_cookie,
-            "domain": ".aternos.org",
-            "path": "/"
-        }])
+        for i, proxy in enumerate(lista_proxies):
+            texto_proxy = f"`{proxy}`" if proxy else "Conexión Directa (Sin Proxy)"
+            await reportar(f"🔄 Intentando conexión {i+1}/{len(lista_proxies)} usando {texto_proxy}... 🍃")
 
-        page = await context.new_page()
+            context_args = {
+                "user_agent": user_agent,
+                "viewport": {"width": 1366, "height": 768},
+                "locale": "es-ES"
+            }
 
-        # Stealth JS Script
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en-US', 'en']});
-            window.chrome = { runtime: {} };
-        """)
+            if proxy:
+                context_args["proxy"] = {"server": f"http://{proxy}"}
 
-        screenshot_path = "error_screenshot.png"
+            try:
+                context = await browser.new_context(**context_args)
+                await context.add_cookies([{
+                    "name": "ATERNOS_SESSION",
+                    "value": session_cookie,
+                    "domain": ".aternos.org",
+                    "path": "/"
+                }])
 
-        try:
-            await reportar("🌱 Conectando con Aternos...")
-            target_url = f"https://aternos.org/server/{server_id}/"
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                page = await context.new_page()
 
-            await reportar("🛡️ Verificando y superando Cloudflare... ⏳")
-            
-            # Reintentar interactuar con Turnstile durante unos segundos
-            for _ in range(10):
-                title = await page.title()
-                if "Un momento" not in title and "Just a moment" not in title and title != "":
-                    break
-                await intentar_resolver_turnstile(page)
-                await asyncio.sleep(2)
-
-            await reportar("🧹 Preparando la interfaz...")
-            await limpiar_popups_y_adblock(page)
-
-            page_title = await page.title()
-
-            # 1. Comprobar si ya se está encendiendo o está Online
-            estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
-            if estado_encendido:
-                return True, "¡El servidor ya se encuentra en proceso de encendido o ya está en línea! 🟢", None
-
-            # 2. Intentar buscar botón #start
-            await reportar("⚡ Localizando el botón de encendido (`#start`)...")
-            start_exists = await page.evaluate("() => !!document.querySelector('#start')")
-            
-            if start_exists:
-                await reportar("🟢 Presionando el botón de inicio...")
-                await page.evaluate("""
-                    () => {
-                        document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
-                        const btn = document.querySelector('#start');
-                        if (btn) btn.click();
-                    }
+                # Stealth JS
+                await page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en-US', 'en']});
+                    window.chrome = { runtime: {} };
                 """)
-                await asyncio.sleep(2)
 
-                try:
+                target_url = f"https://aternos.org/server/{server_id}/"
+                
+                # Intentar cargar con tiempo límite ajustado por si el proxy es lento
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+
+                # Verificar si Cloudflare cedió o si hay que interactuar
+                for _ in range(6):
+                    title = await page.title()
+                    if "Un momento" not in title and "Just a moment" not in title and title != "":
+                        break
+                    await intentar_resolver_turnstile(page)
+                    await asyncio.sleep(2)
+
+                await limpiar_popups_y_adblock(page)
+
+                # 1. Comprobar si ya está encendido o en cola
+                estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
+                if estado_encendido:
+                    await browser.close()
+                    return True, "¡El servidor ya se encuentra en proceso de encendido o en línea! 🟢", None
+
+                # 2. Localizar botón #start
+                start_exists = await page.evaluate("() => !!document.querySelector('#start')")
+                
+                if start_exists:
+                    await reportar("🟢 ¡Conexión limpia! Presionando el botón de inicio...")
                     await page.evaluate("""
                         () => {
-                            const confirm = document.querySelector('#confirm, .btn-accept, .btn-confirm');
-                            if (confirm) confirm.click();
+                            document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
+                            const btn = document.querySelector('#start');
+                            if (btn) btn.click();
                         }
                     """)
+                    await asyncio.sleep(2)
+
+                    try:
+                        await page.evaluate("""
+                            () => {
+                                const confirm = document.querySelector('#confirm, .btn-accept, .btn-confirm');
+                                if (confirm) confirm.click();
+                            }
+                        """)
+                    except Exception:
+                        pass
+
+                    await browser.close()
+                    return True, "¡Solicitud enviada correctamente! BelmoSMP se está encendiendo. 🟢🎮", None
+
+                # Si el proxy no logró llegar al botón, guarda la captura por si acaso y cierra el contexto para el siguiente
+                await page.screenshot(path=screenshot_path, full_page=True)
+                await context.close()
+
+            except Exception:
+                # Si el proxy está muerto o da timeout, salta al siguiente silenciosamente
+                try:
+                    await context.close()
                 except Exception:
                     pass
+                continue
 
-                return True, "¡Solicitud enviada correctamente! BelmoSMP se está encendiendo. 🟢🎮", None
-
-            # Si vuelve a fallar, tomar captura
-            await page.screenshot(path=screenshot_path, full_page=True)
-            return False, f"No se encontró el botón. Título de página: **'{page_title}'**.", screenshot_path
-
-        except Exception as e:
-            try:
-                await page.screenshot(path=screenshot_path, full_page=True)
-            except Exception:
-                screenshot_path = None
-            return False, f"Error durante la conexión: `{str(e)}`", screenshot_path
-        
-        finally:
-            await browser.close()
+        await browser.close()
+        return False, "Ninguno de los proxies logró evadir a Cloudflare en este intento. Prueba lanzar `!encender` de nuevo en un minuto.", screenshot_path
 
 @bot.event
 async def on_ready():
@@ -210,7 +240,7 @@ async def on_ready():
 # --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    msg = await ctx.send(f"🟢 **[Zundabot]** Entendido **{ctx.author.display_name}**, inicializando servidor... Por favor espera. 🍃")
+    msg = await ctx.send(f"🟢 **[Zundabot]** Entendido **{ctx.author.display_name}**, buscando ruta para iniciar... Por favor espera. 🍃")
 
     async def actualizar_mensaje(texto_nuevo):
         try:
@@ -228,7 +258,7 @@ async def encender(ctx):
         if screenshot_file and os.path.exists(screenshot_file):
             try:
                 await ctx.send(
-                    content="📸 **[Zundabot Capture]** Captura del estado actual:",
+                    content="📸 **[Zundabot Capture]** Captura del último intento:",
                     file=discord.File(screenshot_file)
                 )
                 os.remove(screenshot_file)
