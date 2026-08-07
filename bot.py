@@ -30,9 +30,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN COMPLETA DIRECTA AL PANEL ---
+# --- 3. NAVEGACIÓN DIRECTA AL SERVIDOR ESPECÍFICO ---
 async def encender_aternos_playwright():
     session_cookie = os.getenv("ATERNOS_SESSION")
+    server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN") # ID de BelmoSMP
 
     if not session_cookie:
         return False, "Falta la variable `ATERNOS_SESSION` en las Environment Variables de Render."
@@ -57,7 +58,7 @@ async def encender_aternos_playwright():
             viewport={"width": 1280, "height": 720}
         )
 
-        # Inyectar Cookie
+        # Inyectar la Cookie
         await context.add_cookies([{
             "name": "ATERNOS_SESSION",
             "value": session_cookie,
@@ -67,7 +68,7 @@ async def encender_aternos_playwright():
 
         page = await context.new_page()
 
-        # Bloquear medios para velocidad
+        # Bloquear imágenes/medios para máxima velocidad
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -77,31 +78,22 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Ir directo al panel del servidor
-            await page.goto("https://aternos.org/server/", wait_until="domcontentloaded", timeout=45000)
+            # 1. Cargar la lista de servidores para autenticar la sesión
+            await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
+
+            # 2. Navegar DIRECTO al panel exacto de BelmoSMP
+            target_url = f"https://aternos.org/server/{server_id}/"
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2)
 
-            # 2. Si por casualidad cayó en la lista /servers/, intentar clicar la primera tarjeta (sin bloquear el código)
-            if "servers" in page.url:
-                try:
-                    server_card = await page.wait_for_selector(".server-body, .servercard, .server-name", timeout=4000)
-                    if server_card:
-                        await server_card.click()
-                        await asyncio.sleep(2)
-                except Exception:
-                    pass
-
-            # 3. Buscar el botón de encender (#start o botón verde .btn-start)
-            start_btn = None
-            try:
-                start_btn = await page.wait_for_selector("#start, .btn-start, #start-button", timeout=15000)
-            except Exception:
-                pass
+            # 3. Buscar y presionar el botón de inicio (#start)
+            start_btn = await page.wait_for_selector("#start, .btn-start, #start-button", timeout=15000)
 
             if start_btn:
                 await start_btn.click()
                 
-                # Manejar cartel emergente de confirmación (EULA / Notificaciones)
+                # Manejar cartel de confirmación (EULA / Notificaciones)
                 try:
                     confirm_btn = await page.wait_for_selector("#confirm, .btn-accept, .btn-confirm", timeout=6000)
                     if confirm_btn:
@@ -111,7 +103,7 @@ async def encender_aternos_playwright():
 
                 return True, "¡Servidor encendido con éxito!"
 
-            return False, "No se encontró el botón de encendido. Revisa si el servidor ya está encendiéndose o si la cookie venció."
+            return False, "No se encontró el botón de encendido. Es posible que el servidor ya se esté iniciando o la cookie haya expirado."
 
         except Exception as e:
             return False, f"Error durante la navegación: {str(e)}"
