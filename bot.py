@@ -32,20 +32,14 @@ BOT_START_TIME = time.time()
 
 # --- HELPER: LIMPIADOR DE ADBLOCK Y POPUPS ---
 async def limpiar_popups_y_adblock(page):
-    """
-    Monitorea hasta 7 segundos por pantallas de Adblock o cookies
-    y elimina cualquier overlay que bloquee la interfaz.
-    """
     inicio = time.time()
-    while time.time() - inicio < 7:
+    while time.time() - inicio < 5:
         try:
-            # 1. Intentar hacer clic en botones de "Continuar con Adblock", "Aceptar" o "Cerrar"
             btn_adblock = await page.query_selector(".btn-continue, #btn-continue, .fc-button-label, #accept-choices, .btn-accept")
             if btn_adblock and await btn_adblock.is_visible():
                 await btn_adblock.click()
                 await asyncio.sleep(1)
 
-            # 2. Destruir mediante JavaScript cualquier capa/pantalla transparente o roja de Adblock
             await page.evaluate("""
                 () => {
                     const selectors = [
@@ -59,11 +53,9 @@ async def limpiar_popups_y_adblock(page):
             """)
         except Exception:
             pass
-        
-        # Breve pausa en cada iteración del bucle
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN BLINDADA ---
+# --- 3. NAVEGACIÓN INTELIGENTE CON CONTROL DE ESTADOS ---
 async def encender_aternos_playwright():
     session_cookie = os.getenv("ATERNOS_SESSION")
     server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN")
@@ -92,7 +84,6 @@ async def encender_aternos_playwright():
             locale="es-ES"
         )
 
-        # Inyectar Cookie
         await context.add_cookies([{
             "name": "ATERNOS_SESSION",
             "value": session_cookie,
@@ -102,7 +93,6 @@ async def encender_aternos_playwright():
 
         page = await context.new_page()
 
-        # Bloqueo ligero de recursos multimedia
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -112,28 +102,29 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Cargar la lista general para validar autenticación
-            await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=30000)
-            
-            # 2. Ir directamente a la URL de BelmoSMP
+            # 1. Navegar directamente al servidor de BelmoSMP
             target_url = f"https://aternos.org/server/{server_id}/"
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(target_url, wait_until="networkidle", timeout=35000)
 
-            # 3. Limpiar cualquier pantalla roja de Adblocker durante los primeros 7 segundos
+            # 2. Remover avisos y bloqueos de Adblock
             await limpiar_popups_y_adblock(page)
+            await asyncio.sleep(2)
 
-            # 4. Buscar el botón exacto <button id="start">
-            start_btn = await page.wait_for_selector("button#start, #start", timeout=15000)
+            # 3. Comprobar si el servidor YA se está iniciando o está online
+            already_starting = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
+            if already_starting:
+                return True, "¡El servidor ya se encuentra encendiéndose o está Online! 🟢"
+
+            # 4. Intentar encontrar y pulsar el botón #start
+            start_btn = await page.wait_for_selector("#start, button#start, .btn-start", state="attached", timeout=15000)
 
             if start_btn:
-                # Volver a limpiar por si volvió a aparecer una capa al momento del clic
+                # Asegurar que no haya capas tapándolo antes del clic
                 await page.evaluate("() => { document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove()); }")
-                
-                # Clic forzado para ignorar capas invisibles residuales
                 await start_btn.click(force=True)
                 await asyncio.sleep(2)
                 
-                # Manejar confirmación emergente (EULA / Notificaciones) si aparece
+                # Aceptar confirmaciones emergentes si aparecen (EULA, cola, etc.)
                 try:
                     confirm_btn = await page.wait_for_selector("#confirm, .btn-accept, .btn-confirm", timeout=5000)
                     if confirm_btn:
@@ -143,7 +134,7 @@ async def encender_aternos_playwright():
 
                 return True, "¡Servidor encendido con éxito!"
 
-            return False, f"No se encontró el botón `#start`. URL actual: `{page.url}`"
+            return False, f"No se encontró el botón `#start`. La página se quedó en: `{page.url}`"
 
         except Exception as e:
             return False, f"Error durante la navegación (`{page.url}`): {str(e)}"
@@ -163,7 +154,7 @@ async def encender(ctx):
     success, message = await encender_aternos_playwright()
 
     if success:
-        await ctx.send("🚀 **¡Orden enviada con éxito!** BelmoSMP se está encendiendo en Aternos. 🎮")
+        await ctx.send(f"🚀 **{message}** 🎮")
     else:
         await ctx.send(f"❌ **Error al intentar encender:** {message}")
 
