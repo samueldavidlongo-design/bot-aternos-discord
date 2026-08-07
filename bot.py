@@ -1,4 +1,4 @@
-kkimport os
+import os
 import re
 import time
 from threading import Thread
@@ -12,7 +12,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡BelmoSMP Bot activo!"
+    return "¡BelmoSMP Bot activo en Scrape.do!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -29,18 +29,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-def solicitar_via_scraper(target_url, cookie_val):
-    """Petición a Aternos a través de ScraperAPI"""
-    api_key = os.getenv("SCRAPER_API_KEY", "").strip()
-    
-    # Si por alguna razón no lee la variable de Render, usa la clave por defecto
-    if not api_key:
-        api_key = "9b8f9cb65f804598be72dd323213327559006dbca70"
+def solicitar_via_scrapedo(target_url, cookie_val):
+    """Petición a Aternos a través de Scrape.do"""
+    token = os.getenv("SCRAPER_API_KEY", "9b8f9cb65f804598be72dd323213327559006dbca70").strip()
 
     params = {
-        'api_key': api_key,
+        'token': token,
         'url': target_url,
-        'keep_headers': 'true'
+        'geoCode': 'us' # Simula petición desde EE.UU.
     }
     
     headers = {
@@ -48,8 +44,9 @@ def solicitar_via_scraper(target_url, cookie_val):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
     }
     
-    response = requests.get('http://api.scraperapi.com', params=params, headers=headers, timeout=35)
-    return response, api_key
+    # URL oficial de la API de Scrape.do
+    response = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=35)
+    return response
 
 @bot.event
 async def on_ready():
@@ -66,21 +63,17 @@ async def encender(ctx):
         return
 
     try:
-        # Paso 1: Intentar leer el panel de Aternos
-        panel_res, used_key = solicitar_via_scraper("https://aternos.org/server/", session_cookie)
+        # Paso 1: Leer el panel de Aternos vía Scrape.do
+        panel_res = solicitar_via_scrapedo("https://aternos.org/server/", session_cookie)
 
         if panel_res.status_code == 401:
-            key_preview = f"{used_key[:6]}...{used_key[-4:]}" if len(used_key) > 10 else "inválida"
-            await ctx.send(
-                f"⚠️ **[Debug Error 401 - ScraperAPI]:** La API Key empleada (`{key_preview}`) fue rechazada.\n"
-                f"👉 Regenera la clave en scraperapi.com, actualiza `SCRAPER_API_KEY` en Render y guarda cambios."
-            )
+            await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa si copiaste bien el token de Scrape.do en Render.")
             return
         elif panel_res.status_code != 200:
-            await ctx.send(f"⚠️ **[Debug Error HTTP {panel_res.status_code}]:** ScraperAPI devolvió código de error.")
+            await ctx.send(f"⚠️ **[Debug Error HTTP {panel_res.status_code}]:** Scrape.do devolvió código de error.")
             return
 
-        # Extraer el token de inicio interno
+        # Extraer el token interno AJAX/SEC
         sec_match = (
             re.search(r'window\.AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', panel_res.text) or
             re.search(r'SEC\s*:\s*["\']([^"\']+)["\']', panel_res.text) or
@@ -88,14 +81,14 @@ async def encender(ctx):
         )
 
         if not sec_match:
-            await ctx.send("⚠️ **[Debug]:** No se pudo extraer el token AJAX. La sesión de Aternos puede haber expirado.")
+            await ctx.send("⚠️ **[Debug]:** No se pudo extraer el token AJAX. Es posible que la cookie `ATERNOS_SESSION` haya caducado.")
             return
 
         sec_token = sec_match.group(1)
 
-        # Paso 2: Enviar petición de encendido
+        # Paso 2: Enviar la orden de inicio a Aternos
         start_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}"
-        start_res, _ = solicitar_via_scraper(start_url, session_cookie)
+        start_res = solicitar_via_scrapedo(start_url, session_cookie)
 
         if start_res.status_code == 200:
             try:
@@ -104,11 +97,11 @@ async def encender(ctx):
                     await ctx.send("🚀 **¡Listo! Servidor mandado a encender.** En unos minutos BelmoSMP estará listo para jugar. 🎮")
                 else:
                     msg = resp_json.get("error", "Desconocido")
-                    await ctx.send(f"⚠️ Aternos devolvió una respuesta, pero no inició: `{msg}`")
+                    await ctx.send(f"⚠️ Aternos respondió pero no inició: `{msg}`")
             except Exception:
-                await ctx.send("✅ ¡Orden enviada a Aternos! Revisa el estado con `!status` en un momento.")
+                await ctx.send("✅ ¡Orden enviada a Aternos! Revisa con `!status` en un momento.")
         else:
-            await ctx.send(f"⚠️ **[Debug Error HTTP {start_res.status_code}]:** Falló el envío de la orden de encendido.")
+            await ctx.send(f"⚠️ **[Debug Error HTTP {start_res.status_code}]:** Falló el envío de la orden de inicio.")
 
     except Exception as e:
         await ctx.send(f"❌ **[Debug Exception]:** `{e}`")
