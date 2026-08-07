@@ -14,7 +14,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡Zundabot Activo y listo para la acción! 🟢🌱"
+    return "¡Zundabot Activo y listo para la cosecha! 🟢🌱"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -50,7 +50,7 @@ def obtener_proxies_gratuitos():
             continue
 
     random.shuffle(proxies_encontrados)
-    return proxies_encontrados[:12]
+    return proxies_encontrados[:8]
 
 # --- HELPER: RESOLVER TURNSTILE ---
 async def intentar_resolver_turnstile(page):
@@ -99,7 +99,7 @@ async def limpiar_popups_y_adblock(page):
             pass
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN PLAYWRIGHT OPTIMIZADA CON ÉXITO TEMPRANO ---
+# --- 3. NAVEGACIÓN PLAYWRIGHT OPTIMIZADA CON TIEMPO EXTENDIDO ---
 async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
     user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
@@ -115,10 +115,11 @@ async def encender_aternos_playwright(status_callback=None):
     if not session_cookie:
         return False, "⚠️ ¡Ups! Falta configurar la variable `ATERNOS_SESSION` en Render. 🌱❌", None
 
-    await reportar("🌱 Buscando brotes de rutas y proxies disponibles en la red... 🍃")
+    await reportar("🌱 Preparando semillas y configurando la Conexión Estelar Directa... 🍃")
     
+    # Ponemos la Conexión Directa (None) PRIMERO en la lista para que sea la estrella principal
     lista_proxies = obtener_proxies_gratuitos()
-    lista_proxies.append(None) # Respaldo con conexión directa
+    lista_proxies.insert(0, None)
 
     screenshot_path = "error_screenshot.png"
 
@@ -136,8 +137,8 @@ async def encender_aternos_playwright(status_callback=None):
         )
 
         for i, proxy in enumerate(lista_proxies):
-            tipo_conexion = f"Proxy `{proxy}`" if proxy else "Conexión Directa Estelar 🌟"
-            await reportar(f"🌿 Probando ruta [{i+1}/{len(lista_proxies)}] con {tipo_conexion}...")
+            tipo_conexion = "Conexión Directa Estelar 🌟" if not proxy else f"Proxy `{proxy}`"
+            await reportar(f"🌿 Intentando ruta [{i+1}/{len(lista_proxies)}] con {tipo_conexion}...")
 
             context_args = {
                 "user_agent": user_agent,
@@ -167,25 +168,39 @@ async def encender_aternos_playwright(status_callback=None):
                     window.chrome = { runtime: {} };
                 """)
 
-                # Entrar primero a la lista de servidores para asegurar el paso por Cloudflare de forma natural
-                await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=30000)
+                await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=35000)
 
-                # --- MOVIMIENTOS DE MOUSE CURVOS Y REALISTAS ---
-                for _ in range(3):
-                    x1, y1 = random.randint(150, 600), random.randint(150, 450)
-                    x2, y2 = random.randint(400, 900), random.randint(400, 700)
-                    await page.mouse.move(x1, y1)
-                    await page.mouse.move(x2, y2, steps=12)  # Curva simulada suave
-                    await asyncio.sleep(1)
+                # --- BUCLE DE ESPERA ULTRA PACIENTE (DEDICADO A LA VERIFICACIÓN) ---
+                # Damos hasta 25 intentos (~40 segundos) moviendo el mouse con elegancia para que Cloudflare ceda
+                await reportar("⏳ Esperando que Cloudflare complete la verificación de seguridad... 🍃")
+                verificado_con_exito = False
+                
+                for intento_cf in range(25):
+                    title = await page.title()
+                    content_text = await page.content()
+                    
+                    # Si ya desapareció la pantalla de verificación
+                    if "Un momento" not in title and "Just a moment" not in title and "Verificando" not in content_text and "Verificación de seguridad" not in content_text:
+                        verificado_con_exito = True
+                        break
 
-                await intentar_resolver_turnstile(page)
-                await asyncio.sleep(4)  # Reflexión humana de 4 segundos
+                    # Movimientos de mouse orgánicos y suaves con curvas
+                    try:
+                        await page.mouse.move(random.randint(150, 900), random.randint(150, 700), steps=random.randint(8, 16))
+                    except Exception:
+                        pass
 
-                # Validar si pasamos a la lista o panel
-                if "servers" in page.url or "server" in page.url:
-                    await reportar("🍀 ¡Cloudflare superado con éxito! Navegando hacia BelmoSMP... 🍃")
-                    await page.goto(f"https://aternos.org/server/{server_id}/", timeout=30000)
-                    await asyncio.sleep(4)
+                    await intentar_resolver_turnstile(page)
+                    await asyncio.sleep(1.6)
+
+                if not verificado_con_exito:
+                    await page.screenshot(path=screenshot_path, full_page=True)
+                    await context.close()
+                    continue
+
+                await reportar("🍀 ¡Verificación superada con éxito! Navegando hacia BelmoSMP... 🍃")
+                await page.goto(f"https://aternos.org/server/{server_id}/", timeout=35000)
+                await asyncio.sleep(3)
 
                 # Verificar si ya estamos dentro del panel del servidor
                 if "server" in page.url:
@@ -236,7 +251,7 @@ async def encender_aternos_playwright(status_callback=None):
                 continue
 
         await browser.close()
-        return False, "🍂 Cloudflare bloqueó todas las rutas en este intento. ¡Vuelve a probar en un momento con `!encender`!", screenshot_path
+        return False, "🍂 Cloudflare mantuvo la verificación activa. ¡Vuelve a probar con `!encender`!", screenshot_path
 
 @bot.event
 async def on_ready():
@@ -245,7 +260,7 @@ async def on_ready():
 # --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    msg = await ctx.send(f"🌱 **[Zundabot]** ¡Entendido **{ctx.author.display_name}**! Zundamon está preparando las semillas y buscando una ruta limpia... 🍃💚")
+    msg = await ctx.send(f"🌱 **[Zundabot]** ¡Entendido **{ctx.author.display_name}**! Zundamon abrió la Conexión Estelar Directa y está esperando pacientemente la verificación... 🍃💚")
 
     async def actualizar_mensaje(texto_nuevo):
         try:
