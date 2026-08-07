@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN DIRECTA Y SELECCIÓN DE SERVIDOR ---
+# --- 3. NAVEGACIÓN COMPLETA DIRECTA AL PANEL ---
 async def encender_aternos_playwright():
     session_cookie = os.getenv("ATERNOS_SESSION")
 
@@ -57,7 +57,7 @@ async def encender_aternos_playwright():
             viewport={"width": 1280, "height": 720}
         )
 
-        # Inyectar la Cookie de Sesión activa
+        # Inyectar Cookie
         await context.add_cookies([{
             "name": "ATERNOS_SESSION",
             "value": session_cookie,
@@ -67,7 +67,7 @@ async def encender_aternos_playwright():
 
         page = await context.new_page()
 
-        # Bloquear imágenes/medios para máxima velocidad
+        # Bloquear medios para velocidad
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -77,24 +77,33 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Entrar a Aternos
-            await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=45000)
+            # 1. Ir directo al panel del servidor
+            await page.goto("https://aternos.org/server/", wait_until="domcontentloaded", timeout=45000)
             await asyncio.sleep(2)
 
-            # 2. Si hay lista de servidores, seleccionar la tarjeta del servidor
-            server_card = await page.wait_for_selector(".server-body, .server-card, .servercard", timeout=10000)
-            if server_card:
-                await server_card.click()
-                await page.wait_for_url("**/server/**", timeout=15000)
+            # 2. Si por casualidad cayó en la lista /servers/, intentar clicar la primera tarjeta (sin bloquear el código)
+            if "servers" in page.url:
+                try:
+                    server_card = await page.wait_for_selector(".server-body, .servercard, .server-name", timeout=4000)
+                    if server_card:
+                        await server_card.click()
+                        await asyncio.sleep(2)
+                except Exception:
+                    pass
 
-            # 3. Buscar el botón de encender (#start o botón verde con texto Iniciar)
-            start_btn = await page.wait_for_selector("#start, .btn-success", timeout=20000)
+            # 3. Buscar el botón de encender (#start o botón verde .btn-start)
+            start_btn = None
+            try:
+                start_btn = await page.wait_for_selector("#start, .btn-start, #start-button", timeout=15000)
+            except Exception:
+                pass
+
             if start_btn:
                 await start_btn.click()
                 
-                # Aceptar EULA / Confirmaciones / Notificaciones si aparecen
+                # Manejar cartel emergente de confirmación (EULA / Notificaciones)
                 try:
-                    confirm_btn = await page.wait_for_selector("#confirm, .btn-accept", timeout=5000)
+                    confirm_btn = await page.wait_for_selector("#confirm, .btn-accept, .btn-confirm", timeout=6000)
                     if confirm_btn:
                         await confirm_btn.click()
                 except Exception:
@@ -102,7 +111,7 @@ async def encender_aternos_playwright():
 
                 return True, "¡Servidor encendido con éxito!"
 
-            return False, "No se encontró el botón de encendido (es posible que el servidor ya se esté iniciando)."
+            return False, "No se encontró el botón de encendido. Revisa si el servidor ya está encendiéndose o si la cookie venció."
 
         except Exception as e:
             return False, f"Error durante la navegación: {str(e)}"
