@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN COMPLETA (LOGIN -> SELECCIONAR SERVER -> ENCENDER) ---
+# --- 3. NAVEGACIÓN ANTI-DETECCIÓN ULTRA LIGERA ---
 async def encender_aternos_playwright():
     user = os.getenv("ATERNOS_USER")
     password = os.getenv("ATERNOS_PASSWORD")
@@ -50,18 +50,22 @@ async def encender_aternos_playwright():
                 "--no-zygote",
                 "--single-process",
                 "--disable-gpu",
-                "--disable-blink-features=AutomationControlled"
+                "--disable-blink-features=AutomationControlled" # Ocultar rastro de automatización
             ]
         )
         
-        # Simular una pantalla de PC de escritorio real
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1366, "height": 768},
+            locale="es-ES"
         )
+        
         page = await context.new_page()
 
-        # Bloqueo de multimedia/fuentes para mantener baja la RAM
+        # Ocultar la propiedad navigator.webdriver que delata a los bots
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+        # Bloqueo de archivos pesados (Consumo < 180MB RAM)
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -71,38 +75,44 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Ir a la página de login directa
-            await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(2)  # Dar tiempo a que carguen los scripts de la página
+            # 1. Ir a la página de login de Aternos
+            await page.goto("https://aternos.org/go/", wait_until="networkidle", timeout=45000)
 
-            # 2. Llenar credenciales
-            user_input = await page.wait_for_selector(".user", timeout=25000)
-            password_input = await page.wait_for_selector(".password", timeout=25000)
+            # 2. Manejar ventana emergente de cookies si bloquea la pantalla
+            try:
+                cookie_btn = await page.wait_for_selector(".fc-button-label, .fc-cta-consent, #accept-choices", timeout=4000)
+                if cookie_btn:
+                    await cookie_btn.click()
+            except Exception:
+                pass
+
+            # 3. Esperar a que el input de usuario esté visible
+            user_input = await page.wait_for_selector(".user, input[name='user']", timeout=25000)
+            password_input = await page.wait_for_selector(".password, input[name='password']", timeout=25000)
 
             await user_input.fill(user)
             await password_input.fill(password)
 
-            # 3. Hacer clic en Login
-            login_btn = await page.wait_for_selector(".btn-main", timeout=10000)
+            # 4. Hacer clic en Login
+            login_btn = await page.wait_for_selector(".btn-main, button[type='submit']", timeout=10000)
             if login_btn:
                 await login_btn.click()
 
-            # 4. PASO CLAVE: Si cae en la lista de servidores (/servers/), seleccionar el servidor
+            # 5. Esperar la redirección (Si cae en /servers/ selecciona el servidor)
             await page.wait_for_url("**/server**", timeout=30000)
             
             if "servers" in page.url:
-                # Hacer clic en la tarjeta del servidor para ingresar a su panel
                 server_card = await page.wait_for_selector(".server-body, .servercard", timeout=15000)
                 if server_card:
                     await server_card.click()
                     await page.wait_for_url("**/server/", timeout=20000)
 
-            # 5. Ya en el panel del servidor (/server/), presionar el botón de inicio
+            # 6. Ya en el panel (/server/), presionar el botón de inicio
             start_btn = await page.wait_for_selector("#start", timeout=20000)
             if start_btn:
                 await start_btn.click()
                 
-                # Manejo de cartel de confirmación/EULA/Notificaciones si aparece
+                # Aceptar confirmación (EULA / Notificaciones) si aparece
                 try:
                     confirm_btn = await page.wait_for_selector("#confirm, .btn-accept", timeout=5000)
                     if confirm_btn:
