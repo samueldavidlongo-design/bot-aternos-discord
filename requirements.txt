@@ -3,3 +3,5 @@ flask
 cloudscraper
 requests
 playwright
+playwright-stealth
+Pillow
