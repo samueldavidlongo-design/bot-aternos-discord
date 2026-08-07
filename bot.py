@@ -32,7 +32,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 BOT_START_TIME = time.time()
 ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110)
 
-# --- HELPER: OBTENER PROXIES PÚBLICOS ---
+# --- HELPER: OBTENER PROXIES LIGEROS ---
 def obtener_proxies_gratuitos():
     urls_fuente = [
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=anonymous,elite",
@@ -42,7 +42,7 @@ def obtener_proxies_gratuitos():
     proxies_encontrados = []
     for url in urls_fuente:
         try:
-            res = requests.get(url, timeout=5)
+            res = requests.get(url, timeout=4)
             if res.status_code == 200:
                 lineas = [line.strip() for line in res.text.split("\n") if line.strip() and ":" in line]
                 proxies_encontrados.extend(lineas)
@@ -50,59 +50,12 @@ def obtener_proxies_gratuitos():
             continue
 
     random.shuffle(proxies_encontrados)
-    return proxies_encontrados[:8]
+    return proxies_encontrados[:6] # Reducido a 6 para no consumir memoria innecesaria
 
-# --- HELPER: RESOLVER TURNSTILE ---
-async def intentar_resolver_turnstile(page):
-    try:
-        for frame in page.frames:
-            if "cloudflare" in frame.url or "turnstile" in frame.url:
-                checkbox = await frame.query_selector("input[type='checkbox'], .mark, #challenge-stage")
-                if checkbox:
-                    await checkbox.click()
-                    await asyncio.sleep(2)
-                    return True
-        
-        turnstile_element = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
-        if turnstile_element:
-            box = await turnstile_element.bounding_box()
-            if box:
-                await page.mouse.click(box["x"] + 35, box["y"] + (box["height"] / 2))
-                await asyncio.sleep(2)
-                return True
-    except Exception:
-        pass
-    return False
-
-# --- HELPER: LIMPIADOR DE POPUPS ---
-async def limpiar_popups_y_adblock(page):
-    inicio = time.time()
-    while time.time() - inicio < 4:
-        try:
-            btn_adblock = await page.query_selector(".btn-continue, #btn-continue, .fc-button-label, #accept-choices, .btn-accept")
-            if btn_adblock and await btn_adblock.is_visible():
-                await btn_adblock.click()
-                await asyncio.sleep(1)
-
-            await page.evaluate("""
-                () => {
-                    const selectors = [
-                        '.adblock-overlay', '.fc-ab-root', '#adblock-overlay', 
-                        '.modal-backdrop', '.adblock-box', '.adblock-notice'
-                    ];
-                    selectors.forEach(sel => {
-                        document.querySelectorAll(sel).forEach(el => el.remove());
-                    });
-                }
-            """)
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-
-# --- 3. NAVEGACIÓN PLAYWRIGHT OPTIMIZADA CON TIEMPO EXTENDIDO ---
+# --- 3. NAVEGACIÓN PLAYWRIGHT ULTRA-OPTIMIZADA (512MB RAM FRIENDLY) ---
 async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
-    user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
     server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN")
 
     async def reportar(texto):
@@ -113,25 +66,22 @@ async def encender_aternos_playwright(status_callback=None):
                 pass
 
     if not session_cookie:
-        return False, "⚠️ ¡Ups! Falta configurar la variable `ATERNOS_SESSION` en Render. 🌱❌", None
+        return False, "⚠️ ¡Ups! Falta configurar la variable `ATERNOS_SESSION` en Render. 🌱❌"
 
     await reportar("🌱 Preparando semillas y configurando la Conexión Estelar Directa... 🍃")
     
-    # Ponemos la Conexión Directa (None) PRIMERO en la lista para que sea la estrella principal
     lista_proxies = obtener_proxies_gratuitos()
-    lista_proxies.insert(0, None)
-
-    screenshot_path = "error_screenshot.png"
+    lista_proxies.insert(0, None) # Conexión directa primero
 
     async with async_playwright() as p:
+        # Uso estricto de --single-process para ahorrar RAM drásticamente
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
+                "--single-process",
                 "--disable-gpu"
             ]
         )
@@ -140,17 +90,13 @@ async def encender_aternos_playwright(status_callback=None):
             tipo_conexion = "Conexión Directa Estelar 🌟" if not proxy else f"Proxy `{proxy}`"
             await reportar(f"🌿 Intentando ruta [{i+1}/{len(lista_proxies)}] con {tipo_conexion}...")
 
-            context_args = {
-                "user_agent": user_agent,
-                "viewport": {"width": 1366, "height": 768},
-                "locale": "es-ES"
-            }
-
-            if proxy:
-                context_args["proxy"] = {"server": f"http://{proxy}"}
-
+            context = None
             try:
-                context = await browser.new_context(**context_args)
+                context = await browser.new_context(
+                    user_agent=user_agent,
+                    viewport={"width": 1280, "height": 720}
+                )
+                
                 await context.add_cookies([{
                     "name": "ATERNOS_SESSION",
                     "value": session_cookie,
@@ -160,98 +106,50 @@ async def encender_aternos_playwright(status_callback=None):
 
                 page = await context.new_page()
 
-                # Stealth JS
-                await page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en-US', 'en']});
-                    window.chrome = { runtime: {} };
-                """)
+                # Navegar a la lista de servidores
+                await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=25000)
 
-                await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=35000)
-
-                # --- BUCLE DE ESPERA ULTRA PACIENTE (DEDICADO A LA VERIFICACIÓN) ---
-                # Damos hasta 25 intentos (~40 segundos) moviendo el mouse con elegancia para que Cloudflare ceda
-                await reportar("⏳ Esperando que Cloudflare complete la verificación de seguridad... 🍃")
-                verificado_con_exito = False
-                
-                for intento_cf in range(25):
-                    title = await page.title()
-                    content_text = await page.content()
-                    
-                    # Si ya desapareció la pantalla de verificación
-                    if "Un momento" not in title and "Just a moment" not in title and "Verificando" not in content_text and "Verificación de seguridad" not in content_text:
-                        verificado_con_exito = True
+                # Bucle de espera ligero (aprox 25-30s) para pasar Cloudflare de forma fluida
+                for _ in range(12):
+                    if "servers" in page.url or "server" in page.url:
                         break
-
-                    # Movimientos de mouse orgánicos y suaves con curvas
                     try:
-                        await page.mouse.move(random.randint(150, 900), random.randint(150, 700), steps=random.randint(8, 16))
+                        await page.mouse.move(random.randint(200, 700), random.randint(200, 500), steps=5)
                     except Exception:
                         pass
+                    await asyncio.sleep(2.5)
 
-                    await intentar_resolver_turnstile(page)
-                    await asyncio.sleep(1.6)
-
-                if not verificado_con_exito:
-                    await page.screenshot(path=screenshot_path, full_page=True)
-                    await context.close()
-                    continue
-
-                await reportar("🍀 ¡Verificación superada con éxito! Navegando hacia BelmoSMP... 🍃")
-                await page.goto(f"https://aternos.org/server/{server_id}/", timeout=35000)
+                # Navegar directamente al servidor
+                await page.goto(f"https://aternos.org/server/{server_id}/", timeout=20000)
                 await asyncio.sleep(3)
 
-                # Verificar si ya estamos dentro del panel del servidor
-                if "server" in page.url:
-                    await limpiar_popups_y_adblock(page)
-
-                    # 1. Comprobar si ya está encendido o en cola
-                    estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
-                    if estado_encendido:
-                        await browser.close()
-                        return True, "✨ ¡El servidor BelmoSMP ya se encuentra en proceso de encendido o ya está activo! 🟢🌿", None
-
-                    # 2. Localizar botón #start
-                    await reportar("⚡ Localizando el botón de brote verde (`#start`)...")
-                    start_exists = await page.evaluate("() => !!document.querySelector('#start')")
+                # Verificar y hacer clic en el botón de encendido si está disponible
+                start_btn = await page.query_selector("#start")
+                if start_btn:
+                    await start_btn.click()
+                    await asyncio.sleep(1.5)
                     
-                    if start_exists:
-                        await reportar("🟢 ¡Botón localizado! Zundamon dando la orden de encendido... 🍃")
-                        await page.evaluate("""
-                            () => {
-                                document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
-                                const btn = document.querySelector('#start');
-                                if (btn) btn.click();
-                            }
-                        """)
-                        await asyncio.sleep(2)
+                    # Confirmar si aparece el diálogo
+                    confirm_btn = await page.query_selector(".btn-confirm, #confirm")
+                    if confirm_btn:
+                        await confirm_btn.click()
+                    
+                    await context.close()
+                    await browser.close()
+                    return True, "🚀 ¡Señal enviada con éxito! BelmoSMP está despertando. 🟢🌱🎮"
 
-                        try:
-                            await page.evaluate("""
-                                () => {
-                                    const confirm = document.querySelector('#confirm, .btn-accept, .btn-confirm');
-                                    if (confirm) confirm.click();
-                                }
-                            """)
-                        except Exception:
-                            pass
-
-                        await browser.close()
-                        return True, "🚀 ¡Señal enviada con éxito! BelmoSMP está despertando. 🟢🌱🎮", None
-
-                await page.screenshot(path=screenshot_path, full_page=True)
                 await context.close()
 
             except Exception:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
+                if context:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
                 continue
 
         await browser.close()
-        return False, "🍂 Cloudflare mantuvo la verificación activa. ¡Vuelve a probar con `!encender`!", screenshot_path
+        return False, "🍂 Memoria limitada o bloqueo persistente. ¡Vuelve a probar con `!encender`!"
 
 @bot.event
 async def on_ready():
@@ -260,7 +158,7 @@ async def on_ready():
 # --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    msg = await ctx.send(f"🌱 **[Zundabot]** ¡Entendido **{ctx.author.display_name}**! Zundamon abrió la Conexión Estelar Directa y está esperando pacientemente la verificación... 🍃💚")
+    msg = await ctx.send(f"🌱 **[Zundabot]** ¡Entendido **{ctx.author.display_name}**! Zundamon abrió la ruta optimizada para 512MB... 🍃💚")
 
     async def actualizar_mensaje(texto_nuevo):
         try:
@@ -268,22 +166,12 @@ async def encender(ctx):
         except Exception:
             pass
 
-    success, result_message, screenshot_file = await encender_aternos_playwright(status_callback=actualizar_mensaje)
+    success, result_message = await encender_aternos_playwright(status_callback=actualizar_mensaje)
 
     if success:
         await msg.edit(content=f"🟢 **[Zundabot Éxito]** {result_message} 🌿✨")
     else:
         await msg.edit(content=f"❌ **[Zundabot Brote Cortado]:** {result_message}")
-        
-        if screenshot_file and os.path.exists(screenshot_file):
-            try:
-                await ctx.send(
-                    content="📸 **[Zundabot Evidencia]** Captura del último intento en el jardín:",
-                    file=discord.File(screenshot_file)
-                )
-                os.remove(screenshot_file)
-            except Exception as e:
-                print(f"Error al enviar captura: {e}")
 
 # --- 5. COMANDO: !status ---
 @bot.command(name="status")
@@ -298,8 +186,7 @@ async def status(ctx):
     uptime_str = f"{hours}h {minutes}m {seconds}s"
 
     try:
-        res = requests.get(f"https://api.mcsrvstat.us/3/{minecraft_ip}", timeout=7).json()
-        
+        res = requests.get(f"https://api.mcsrvstat.us/3/{minecraft_ip}", timeout=6).json()
         is_online = res.get("online", False)
         
         if is_online:
@@ -308,10 +195,7 @@ async def status(ctx):
             version = res.get("version", "Java Edition")
             
             player_list = res.get("players", {}).get("list", [])
-            if player_list:
-                players_formatted = ", ".join([p.get("name", "Jugador") for p in player_list])
-            else:
-                players_formatted = "Ningún aventurero conectado por ahora."
+            players_formatted = ", ".join([p.get("name", "Jugador") for p in player_list]) if player_list else "Ningún aventurero conectado por ahora."
 
             motd_raw = res.get("motd", {}).get("clean", ["¡Servidor BelmoSMP!"])
             motd_text = " ".join(motd_raw).strip() if motd_raw else "¡BelmoSMP Minecraft!"
