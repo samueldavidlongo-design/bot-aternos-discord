@@ -7,12 +7,12 @@ import discord
 from discord.ext import commands
 import requests
 
-# --- 1. SERVIDOR WEB 24/7 ---
+# --- 1. MANTENER VIVO EN RENDER (24/7) ---
 app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡BelmoSMP Bot activo en Scrape.do!"
+    return "¡BelmoSMP Bot activo!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -31,12 +31,16 @@ BOT_START_TIME = time.time()
 
 def solicitar_via_scrapedo(target_url, cookie_val):
     """Petición a Aternos a través de Scrape.do"""
-    token = os.getenv("SCRAPER_API_KEY", "9b8f9cb65f804598be72dd323213327559006dbca70").strip()
+    # Busca 'scrape_api_key' o 'SCRAPER_API_KEY' o usa la clave por defecto
+    token = (
+        os.getenv("scrape_api_key") or 
+        os.getenv("SCRAPER_API_KEY") or 
+        "9b8f9cb65f804598be72dd323213327559006dbca70"
+    ).strip()
 
     params = {
         'token': token,
-        'url': target_url,
-        'geoCode': 'us' # Simula petición desde EE.UU.
+        'url': target_url
     }
     
     headers = {
@@ -44,7 +48,6 @@ def solicitar_via_scrapedo(target_url, cookie_val):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
     }
     
-    # URL oficial de la API de Scrape.do
     response = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=35)
     return response
 
@@ -67,10 +70,10 @@ async def encender(ctx):
         panel_res = solicitar_via_scrapedo("https://aternos.org/server/", session_cookie)
 
         if panel_res.status_code == 401:
-            await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa si copiaste bien el token de Scrape.do en Render.")
+            await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa tu API Key en https://dashboard.scrape.do/overview")
             return
         elif panel_res.status_code != 200:
-            await ctx.send(f"⚠️ **[Debug Error HTTP {panel_res.status_code}]:** Scrape.do devolvió código de error.")
+            await ctx.send(f"⚠️ **[Debug Error HTTP {panel_res.status_code}]:** Scrape.do / Aternos devolvió código de error.")
             return
 
         # Extraer el token interno AJAX/SEC
@@ -121,19 +124,18 @@ async def status(ctx):
     is_online = False
     online_players = 0
     max_players = 0
-    ping = "N/A"
     version = "Desconocida"
 
     try:
-        res = requests.get(f"https://api.mcstatus.io/v2/status/java/{minecraft_ip}", timeout=8).json()
-        if res.get("online"):
+        # Verificación precisa mediante la API de mcsrvstat.us
+        res = requests.get(f"https://api.mcsrvstat.us/3/{minecraft_ip}", timeout=6).json()
+        if res.get("online") is True:
             is_online = True
-            online_players = res["players"]["online"]
-            max_players = res["players"]["max"]
-            ping = res.get("roundTripLatency", "N/A")
-            version = res.get("version", {}).get("name_clean", "Desconocida")
+            online_players = res.get("players", {}).get("online", 0)
+            max_players = res.get("players", {}).get("max", 0)
+            version = res.get("version", "Java")
     except Exception:
-        pass
+        is_online = False
 
     if is_online:
         embed = discord.Embed(
@@ -142,12 +144,11 @@ async def status(ctx):
             color=discord.Color.green()
         )
         embed.add_field(name="👥 Jugadores", value=f"**{online_players}/{max_players}**", inline=True)
-        embed.add_field(name="⚡ Ping", value=f"**{ping} ms**", inline=True)
-        embed.add_field(name="📌 Versión", value=f"`{version}`", inline=False)
+        embed.add_field(name="📌 Versión", value=f"`{version}`", inline=True)
     else:
         embed = discord.Embed(
             title="😴 BelmoSMP está Apagado",
-            description="El servidor está offline.\n\n👉 Escribe **`!encender`** para iniciarlo.",
+            description="El servidor se encuentra offline.\n\n👉 Escribe **`!encender`** para iniciarlo.",
             color=discord.Color.red()
         )
 
