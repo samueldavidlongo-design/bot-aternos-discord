@@ -33,7 +33,7 @@ BOT_START_TIME = time.time()
 # --- HELPER: LIMPIADOR DE POPUPS Y ADBLOCK ---
 async def limpiar_popups_y_adblock(page):
     inicio = time.time()
-    while time.time() - inicio < 6:
+    while time.time() - inicio < 5:
         try:
             btn_adblock = await page.query_selector(".btn-continue, #btn-continue, .fc-button-label, #accept-choices, .btn-accept")
             if btn_adblock and await btn_adblock.is_visible():
@@ -55,7 +55,7 @@ async def limpiar_popups_y_adblock(page):
             pass
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN INTELIGENTE ---
+# --- 3. NAVEGACIÓN CON DETECCIÓN DE TÍTULO ---
 async def encender_aternos_playwright():
     session_cookie = os.getenv("ATERNOS_SESSION")
     server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN")
@@ -70,10 +70,8 @@ async def encender_aternos_playwright():
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-accelerated-2d-canvas",
+                "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
-                "--no-zygote",
-                "--single-process",
                 "--disable-gpu"
             ]
         )
@@ -81,7 +79,13 @@ async def encender_aternos_playwright():
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1366, "height": 768},
-            locale="es-ES"
+            locale="es-ES",
+            extra_http_headers={
+                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"'
+            }
         )
 
         await context.add_cookies([{
@@ -93,7 +97,9 @@ async def encender_aternos_playwright():
 
         page = await context.new_page()
 
-        # Solo bloqueamos imágenes y medios (dejamos cargar las fuentes y scripts para renderizar bien el botón)
+        # Ocultar marca de automatización
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
         async def block_resources(route):
             if route.request.resource_type in ["image", "media"]:
                 await route.abort()
@@ -103,24 +109,25 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Navegar directamente al servidor de BelmoSMP
             target_url = f"https://aternos.org/server/{server_id}/"
             await page.goto(target_url, wait_until="domcontentloaded", timeout=40000)
 
-            # 2. Remover avisos y bloqueos de Adblock
+            # Espera estratégica para que resuelva peticiones
+            await asyncio.sleep(4)
             await limpiar_popups_y_adblock(page)
-            await asyncio.sleep(3)
 
-            # 3. Comprobar si el servidor YA se está encendiendo o está Online
-            estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online, .btn-danger")
+            # Obtener el título de la página donde se quedó
+            page_title = await page.title()
+
+            # 1. ¿El servidor YA se está encendiendo o está Online?
+            estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
             if estado_encendido:
                 return True, "¡El servidor ya se encuentra encendiéndose o ya está Online! 🟢"
 
-            # 4. Intentar hacer clic en el botón de encendido con evaluación en vivo
+            # 2. ¿Existe el botón #start en el código?
             start_exists = await page.evaluate("() => !!document.querySelector('#start')")
             
             if start_exists:
-                # Quitar overlays y presionar directo por JS para evitar interferencias
                 await page.evaluate("""
                     () => {
                         document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
@@ -130,7 +137,6 @@ async def encender_aternos_playwright():
                 """)
                 await asyncio.sleep(2)
 
-                # Confirmar popups (EULA / Cola) si aparecen
                 try:
                     await page.evaluate("""
                         () => {
@@ -143,11 +149,8 @@ async def encender_aternos_playwright():
 
                 return True, "¡Orden enviada con éxito! BelmoSMP se está encendiendo en Aternos."
 
-            # Si no encontró #start ni #stop, traemos los botones presentes para ver qué hay en pantalla
-            botones_encontrados = await page.evaluate("""
-                () => Array.from(document.querySelectorAll('button, a.btn')).map(b => b.id || b.className).slice(0, 5)
-            """)
-            return False, f"No se detectó el botón. Elementos visibles en la página: `{botones_encontrados}`"
+            # Si no encuentra nada, devuelve el TÍTULO de la página para saber exacto qué ocurrió
+            return False, f"Página cargada: **'{page_title}'** (`{page.url}`). No se vio `#start`."
 
         except Exception as e:
             return False, f"Error durante la navegación (`{page.url}`): {str(e)}"
