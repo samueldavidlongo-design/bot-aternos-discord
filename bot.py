@@ -7,7 +7,6 @@ import discord
 from discord.ext import commands
 import requests
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 # --- 1. MANTENER VIVO EN RENDER 24/7 ---
 app = Flask("")
@@ -76,7 +75,6 @@ async def encender_aternos_playwright(status_callback=None):
     await reportar("🟢 Inicializando el navegador Zundabot, por favor espera... 🍃")
 
     async with async_playwright() as p:
-        # Usamos opciones anti-detección de Chromium
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -85,8 +83,7 @@ async def encender_aternos_playwright(status_callback=None):
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
-                "--disable-gpu",
-                "--disable-web-security"
+                "--disable-gpu"
             ]
         )
         
@@ -105,11 +102,13 @@ async def encender_aternos_playwright(status_callback=None):
 
         page = await context.new_page()
 
-        # Aplicar parches de evasión Stealth
-        try:
-            await stealth_async(page)
-        except Exception:
-            pass
+        # Stealth Nativo (Inyección directa)
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en-US', 'en']});
+            window.chrome = { runtime: {} };
+        """)
 
         async def block_resources(route):
             if route.request.resource_type in ["image", "media"]:
@@ -208,14 +207,14 @@ async def encender(ctx):
     else:
         await msg.edit(content=f"❌ **[Zundabot] Error:** {result_message}")
         
-        # Enviar la captura de pantalla si existe
+        # Enviar captura de pantalla si falla
         if screenshot_file and os.path.exists(screenshot_file):
             try:
                 await ctx.send(
                     content="📸 **[Zundabot Capture]** Aquí tienes la captura de lo que vio el navegador al fallar:",
                     file=discord.File(screenshot_file)
                 )
-                os.remove(screenshot_file) # Limpiar archivo
+                os.remove(screenshot_file)
             except Exception as e:
                 print(f"Error al enviar captura: {e}")
 
