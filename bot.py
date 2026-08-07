@@ -29,8 +29,37 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-def solicitar_via_scrapedo(target_url, cookie_val, render_js=True):
-    """Petición a Aternos a través de Scrape.do con soporte de JS Rendering"""
+def obtener_cadena_cookies():
+    """Construye el string de cookies con ATERNOS_SESSION y ATERNOS_SERVER"""
+    session_val = os.getenv("ATERNOS_SESSION", "").strip()
+    server_val = os.getenv("ATERNOS_SERVER", "").strip()
+
+    if not session_val:
+        return None
+
+    # Si session_val ya trae todo el formato "ATERNOS_SESSION=...; ATERNOS_SERVER=..."
+    if "ATERNOS_SESSION=" in session_val and "ATERNOS_SERVER=" in session_val:
+        return session_val
+
+    cookies = []
+    
+    # Manejar ATERNOS_SESSION
+    if "ATERNOS_SESSION=" in session_val:
+        cookies.append(session_val)
+    else:
+        cookies.append(f"ATERNOS_SESSION={session_val}")
+
+    # Manejar ATERNOS_SERVER
+    if server_val:
+        if "ATERNOS_SERVER=" in server_val:
+            cookies.append(server_val)
+        else:
+            cookies.append(f"ATERNOS_SERVER={server_val}")
+
+    return "; ".join(cookies)
+
+def solicitar_via_scrapedo(target_url, cookie_header_str, render_js=True):
+    """Petición a Aternos inyectando las cookies en Scrape.do"""
     token = (
         os.getenv("SCRAPER_API_KEY") or 
         os.getenv("scrape_api_key") or 
@@ -39,17 +68,18 @@ def solicitar_via_scrapedo(target_url, cookie_val, render_js=True):
 
     params = {
         'token': token,
-        'url': target_url
+        'url': target_url,
+        'super': 'true'  # proxies residenciales
     }
-    
+
     if render_js:
         params['render'] = 'true'
 
     headers = {
-        'Cookie': f"ATERNOS_SESSION={cookie_val}" if "ATERNOS_SESSION=" not in cookie_val else cookie_val,
+        'Cookie': cookie_header_str,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
     }
-    
+
     response = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=45)
     return response
 
@@ -60,16 +90,16 @@ async def on_ready():
 # --- 3. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    await ctx.send(f"Entendido! **{ctx.author.display_name}**, procesando encendido con renderizado de Aternos... ⚡")
+    await ctx.send(f"Entendido! **{ctx.author.display_name}**, procesando encendido con credenciales de Aternos... ⚡")
 
-    session_cookie = os.getenv("ATERNOS_SESSION")
-    if not session_cookie:
-        await ctx.send("❌ **[Debug]:** Falta la variable `ATERNOS_SESSION` en Render.")
+    cookie_header = obtener_cadena_cookies()
+    if not cookie_header:
+        await ctx.send("❌ **[Debug]:** Falta la variable `ATERNOS_SESSION` en las variables de entorno de Render.")
         return
 
     try:
-        # Paso 1: Leer el panel de Aternos vía Scrape.do con Renderizado JS activado
-        panel_res = solicitar_via_scrapedo("https://aternos.org/server/", session_cookie, render_js=True)
+        # Paso 1: Leer el panel de Aternos vía Scrape.do
+        panel_res = solicitar_via_scrapedo("https://aternos.org/server/", cookie_header, render_js=True)
 
         if panel_res.status_code == 401:
             await ctx.send("⚠️ **[Debug Error 401]:** Scrape.do rechazó el token. Revisa tu API Key en el dashboard.")
@@ -89,10 +119,12 @@ async def encender(ctx):
         )
 
         if not sec_match:
-            # Diagnóstico: verificar si Aternos redirigió al Login por sesión inválida
             is_login_page = "login" in html_text.lower() or "sign in" in html_text.lower()
             if is_login_page:
-                await ctx.send("⚠️ **[Debug]:** Aternos redirigió a la página de login. La cookie `ATERNOS_SESSION` no fue aceptada como válida.")
+                await ctx.send(
+                    "⚠️ **[Debug]:** Aternos sigue pidiendo login.\n"
+                    "👉 Revisa haber actualizado las cookies `ATERNOS_SESSION` y `ATERNOS_SERVER` desde el navegador."
+                )
             else:
                 title_match = re.search(r'<title>(.*?)</title>', html_text, re.IGNORECASE)
                 page_title = title_match.group(1) if title_match else "Sin título"
@@ -103,7 +135,7 @@ async def encender(ctx):
 
         # Paso 2: Enviar la orden de inicio a Aternos
         start_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}"
-        start_res = solicitar_via_scrapedo(start_url, session_cookie, render_js=False)
+        start_res = solicitar_via_scrapedo(start_url, cookie_header, render_js=False)
 
         if start_res.status_code == 200:
             try:
