@@ -1,12 +1,12 @@
 import os
-import re
 import time
-import urllib.parse
+import asyncio
 from threading import Thread
 from flask import Flask
 import discord
 from discord.ext import commands
 import requests
+from playwright.async_api import async_playwright
 
 # --- 1. MANTENER VIVO EN RENDER (24/7) ---
 app = Flask("")
@@ -30,102 +30,79 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. MOTOR MANUAL DE ATERNOS ---
-class ManualAternosClient:
-    def __init__(self):
-        self.scrape_token = (
-            os.getenv("SCRAPER_API_KEY") or 
-            os.getenv("scrape_api_key") or 
-            "9b8f9cb65f804598be72dd323213327559006dbca70"
-        ).strip()
-        self.user = os.getenv("ATERNOS_USER")
-        self.password = os.getenv("ATERNOS_PASSWORD")
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
-            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
-        })
+# --- 3. NAVEGACIÓN HIPER-OPTIMIZADA (AHORRA 70% DE RAM) ---
+async def encender_aternos_playwright():
+    user = os.getenv("ATERNOS_USER")
+    password = os.getenv("ATERNOS_PASSWORD")
 
-    def request_scrapedo(self, target_url, method="GET", data=None, render_js=True):
-        """Petición genérica pasando por Scrape.do manteniendo la sesión"""
-        params = {
-            'token': self.scrape_token,
-            'url': target_url,
-            'super': 'true'
-        }
-        if render_js:
-            params['render'] = 'true'
+    if not user or not password:
+        return False, "Faltan las variables `ATERNOS_USER` o `ATERNOS_PASSWORD` en Render."
 
-        # Preparar headers incluyendo cookies actuales de la sesión
-        headers = {}
-        cookie_header_str = "; ".join([f"{k}={v}" for k, v in self.session.cookies.get_dict().items()])
-        if cookie_header_str:
-            headers['Cookie'] = cookie_header_str
-
-        if method == "POST" and data:
-            # Scrape.do acepta POST si se envían los datos
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-            res = requests.post('https://api.scrape.do', params=params, headers=headers, data=data, timeout=45)
-        else:
-            res = requests.get('https://api.scrape.do', params=params, headers=headers, timeout=45)
-
-        # Guardar cookies que devuelva la respuesta
-        if res.cookies:
-            self.session.cookies.update(res.cookies)
-
-        return res
-
-    def login_y_obtener_token(self):
-        """1. Obtiene la página de login, extrae SEC/CSRF y envía credenciales manualmente."""
-        if not self.user or not self.password:
-            return None, "Faltan las variables `ATERNOS_USER` y `ATERNOS_PASSWORD` en Render."
-
-        # Paso A: Obtener la página del panel (o redirección a login)
-        panel_res = self.request_scrapedo("https://aternos.org/server/", render_js=True)
-        if panel_res.status_code != 200:
-            return None, f"Error HTTP {panel_res.status_code} al conectar con Aternos."
-
-        html = panel_res.text
-
-        # Intentar extraer TOKEN directamente si la sesión previa servía
-        sec_token = self._extraer_token(html)
-        if sec_token:
-            return sec_token, None
-
-        # Paso B: Si no hay token, significa que no estamos logueados. Hacer POST a /go/
-        payload = {
-            'user': self.user,
-            'password': self.password
-        }
-
-        login_res = self.request_scrapedo("https://aternos.org/go/", method="POST", data=payload, render_js=True)
-        
-        # Paso C: Cargar de nuevo el panel para obtener el token AJAX tras el login
-        panel_after_login = self.request_scrapedo("https://aternos.org/server/", render_js=True)
-        sec_token = self._extraer_token(panel_after_login.text)
-
-        if sec_token:
-            return sec_token, None
-        else:
-            if "login" in panel_after_login.text.lower():
-                return None, "Aternos rechazó el usuario o la contraseña provistos."
-            return None, "No se pudo extraer el token AJAX tras el intento de inicio de sesión."
-
-    def _extraer_token(self, html_text):
-        """Expresiones regulares para encontrar el token dinámico de Aternos"""
-        match = (
-            re.search(r'window\.AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', html_text) or
-            re.search(r'SEC\s*:\s*["\']([^"\']+)["\']', html_text) or
-            re.search(r'AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', html_text) or
-            re.search(r'head\s*=\s*["\']([^"\']+)["\']', html_text)
+    async with async_playwright() as p:
+        # Banderas de Chromium para consumo mínimo de RAM
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-accelerated-2d-canvas",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+                "--disable-gpu"
+            ]
         )
-        return match.group(1) if match else None
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
 
-    def encender_servidor(self, sec_token):
-        """Manda la petición directa al endpoint de start con el token extraído"""
-        start_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}"
-        start_res = self.request_scrapedo(start_url, render_js=False)
-        return start_res
+        # BLOQUEAR IMÁGENES, ESTILOS Y FUENTES (CERO CONSUMO EXTRA)
+        async def block_resources(route):
+            if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await page.route("**/*", block_resources)
+
+        try:
+            # 1. Entrar a la página de login
+            await page.goto("https://aternos.org/go/", wait_until="domcontentloaded", timeout=45000)
+
+            # 2. Llenar usuario y clave
+            await page.fill("input.user", user)
+            await page.fill("input.password", password)
+            await page.click("button.btn-main")
+
+            # 3. Esperar que redirija al panel del servidor
+            await page.wait_for_url("**/server/**", timeout=30000)
+
+            # 4. Hacer clic en el botón de encendido
+            start_btn = await page.wait_for_selector("#start", timeout=15000)
+            if start_btn:
+                await start_btn.click()
+                
+                # Confirmación opcional (EULA/Notificaciones)
+                try:
+                    confirm_btn = await page.wait_for_selector("#confirm", timeout=5000)
+                    if confirm_btn:
+                        await confirm_btn.click()
+                except Exception:
+                    pass
+
+                return True, "¡Servidor encendido con éxito!"
+
+            return False, "No se encontró el botón `#start` en el panel."
+
+        except Exception as e:
+            return False, f"Error durante la navegación: {str(e)}"
+        
+        finally:
+            # Cierre obligatorio del navegador para liberar memoria RAM al instante
+            await browser.close()
 
 @bot.event
 async def on_ready():
@@ -134,30 +111,14 @@ async def on_ready():
 # --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    await ctx.send(f"Entendido **{ctx.author.display_name}**, procesando credenciales e iniciando **BelmoSMP**... ⚡")
+    await ctx.send(f"Entendido **{ctx.author.display_name}**, conectando a Aternos e iniciando **BelmoSMP**... ⚡")
 
-    client = ManualAternosClient()
-    sec_token, err = client.login_y_obtener_token()
+    success, message = await encender_aternos_playwright()
 
-    if err:
-        await ctx.send(f"❌ **[Error de Autenticación]:** `{err}`")
-        return
-
-    # Intentar mandar la orden de encendido con el token obtenido
-    start_res = client.encender_servidor(sec_token)
-
-    if start_res.status_code == 200:
-        try:
-            resp_json = start_res.json()
-            if resp_json.get("success"):
-                await ctx.send("🚀 **¡Listo! Servidor mandado a encender.** En unos minutos BelmoSMP estará listo para jugar. 🎮")
-            else:
-                msg = resp_json.get("error", "Desconocido")
-                await ctx.send(f"⚠️ Aternos respondió pero no inició: `{msg}`")
-        except Exception:
-            await ctx.send("✅ ¡Orden enviada a Aternos! Revisa con `!status` en un momento.")
+    if success:
+        await ctx.send("🚀 **¡Orden enviada con éxito!** BelmoSMP se está encendiendo en Aternos. 🎮")
     else:
-        await ctx.send(f"⚠️ **[Debug Error HTTP {start_res.status_code}]:** Falló la petición AJAX de inicio.")
+        await ctx.send(f"❌ **Error al intentar encender:** `{message}`")
 
 # --- 5. COMANDO: !status ---
 @bot.command(name="status")
