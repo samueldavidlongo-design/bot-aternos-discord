@@ -30,10 +30,43 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
 
-# --- 3. NAVEGACIÓN DIRECTA AL SERVIDOR ESPECÍFICO ---
+# --- HELPER: LIMPIADOR DE ADBLOCK Y POPUPS ---
+async def limpiar_popups_y_adblock(page):
+    """
+    Monitorea hasta 7 segundos por pantallas de Adblock o cookies
+    y elimina cualquier overlay que bloquee la interfaz.
+    """
+    inicio = time.time()
+    while time.time() - inicio < 7:
+        try:
+            # 1. Intentar hacer clic en botones de "Continuar con Adblock", "Aceptar" o "Cerrar"
+            btn_adblock = await page.query_selector(".btn-continue, #btn-continue, .fc-button-label, #accept-choices, .btn-accept")
+            if btn_adblock and await btn_adblock.is_visible():
+                await btn_adblock.click()
+                await asyncio.sleep(1)
+
+            # 2. Destruir mediante JavaScript cualquier capa/pantalla transparente o roja de Adblock
+            await page.evaluate("""
+                () => {
+                    const selectors = [
+                        '.adblock-overlay', '.fc-ab-root', '#adblock-overlay', 
+                        '.modal-backdrop', '.adblock-box', '.adblock-notice'
+                    ];
+                    selectors.forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => el.remove());
+                    });
+                }
+            """)
+        except Exception:
+            pass
+        
+        # Breve pausa en cada iteración del bucle
+        await asyncio.sleep(0.5)
+
+# --- 3. NAVEGACIÓN BLINDADA ---
 async def encender_aternos_playwright():
     session_cookie = os.getenv("ATERNOS_SESSION")
-    server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN") # ID de BelmoSMP
+    server_id = os.getenv("ATERNOS_SERVER_ID", "TG467pziBQ20JxmN")
 
     if not session_cookie:
         return False, "Falta la variable `ATERNOS_SESSION` en las Environment Variables de Render."
@@ -55,10 +88,11 @@ async def encender_aternos_playwright():
         
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
+            viewport={"width": 1366, "height": 768},
+            locale="es-ES"
         )
 
-        # Inyectar la Cookie
+        # Inyectar Cookie
         await context.add_cookies([{
             "name": "ATERNOS_SESSION",
             "value": session_cookie,
@@ -68,7 +102,7 @@ async def encender_aternos_playwright():
 
         page = await context.new_page()
 
-        # Bloquear imágenes/medios para máxima velocidad
+        # Bloqueo ligero de recursos multimedia
         async def block_resources(route):
             if route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -78,35 +112,41 @@ async def encender_aternos_playwright():
         await page.route("**/*", block_resources)
 
         try:
-            # 1. Cargar la lista de servidores para autenticar la sesión
+            # 1. Cargar la lista general para validar autenticación
             await page.goto("https://aternos.org/servers/", wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(1)
-
-            # 2. Navegar DIRECTO al panel exacto de BelmoSMP
+            
+            # 2. Ir directamente a la URL de BelmoSMP
             target_url = f"https://aternos.org/server/{server_id}/"
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
 
-            # 3. Buscar y presionar el botón de inicio (#start)
-            start_btn = await page.wait_for_selector("#start, .btn-start, #start-button", timeout=15000)
+            # 3. Limpiar cualquier pantalla roja de Adblocker durante los primeros 7 segundos
+            await limpiar_popups_y_adblock(page)
+
+            # 4. Buscar el botón exacto <button id="start">
+            start_btn = await page.wait_for_selector("button#start, #start", timeout=15000)
 
             if start_btn:
-                await start_btn.click()
+                # Volver a limpiar por si volvió a aparecer una capa al momento del clic
+                await page.evaluate("() => { document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove()); }")
                 
-                # Manejar cartel de confirmación (EULA / Notificaciones)
+                # Clic forzado para ignorar capas invisibles residuales
+                await start_btn.click(force=True)
+                await asyncio.sleep(2)
+                
+                # Manejar confirmación emergente (EULA / Notificaciones) si aparece
                 try:
-                    confirm_btn = await page.wait_for_selector("#confirm, .btn-accept, .btn-confirm", timeout=6000)
+                    confirm_btn = await page.wait_for_selector("#confirm, .btn-accept, .btn-confirm", timeout=5000)
                     if confirm_btn:
-                        await confirm_btn.click()
+                        await confirm_btn.click(force=True)
                 except Exception:
                     pass
 
                 return True, "¡Servidor encendido con éxito!"
 
-            return False, "No se encontró el botón de encendido. Es posible que el servidor ya se esté iniciando o la cookie haya expirado."
+            return False, f"No se encontró el botón `#start`. URL actual: `{page.url}`"
 
         except Exception as e:
-            return False, f"Error durante la navegación: {str(e)}"
+            return False, f"Error durante la navegación (`{page.url}`): {str(e)}"
         
         finally:
             await browser.close()
@@ -125,7 +165,7 @@ async def encender(ctx):
     if success:
         await ctx.send("🚀 **¡Orden enviada con éxito!** BelmoSMP se está encendiendo en Aternos. 🎮")
     else:
-        await ctx.send(f"❌ **Error al intentar encender:** `{message}`")
+        await ctx.send(f"❌ **Error al intentar encender:** {message}")
 
 # --- 5. COMANDO: !status ---
 @bot.command(name="status")
