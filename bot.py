@@ -13,7 +13,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-    return "¡BelmoSMP Zundamon Bot Activo! 🟢🌱"
+    return "¡BelmoSMP Bot Activo! 🟢🌱"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -29,7 +29,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 BOT_START_TIME = time.time()
-ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110) # Verde Zundamon 💚
+ZUNDA_GREEN = discord.Color.from_rgb(120, 210, 110)
 
 # --- HELPER: LIMPIADOR DE POPUPS Y ADBLOCK ---
 async def limpiar_popups_y_adblock(page):
@@ -56,7 +56,29 @@ async def limpiar_popups_y_adblock(page):
             pass
         await asyncio.sleep(0.5)
 
-# --- 3. NAVEGACIÓN PLAYWRIGHT CON ACTUALIZACIÓN EN VIVO ---
+# --- HELPER: INTENTO DE CLIC EN CASILLA CLOUDFLARE ---
+async def intentar_clic_cloudflare(page):
+    try:
+        # Buscar iframes de Cloudflare/Turnstile
+        for frame in page.frames:
+            if "cloudflare" in frame.url or "turnstile" in frame.url:
+                checkbox = await frame.query_selector("input[type='checkbox'], .mark, #challenge-stage")
+                if checkbox:
+                    await checkbox.click()
+                    await asyncio.sleep(2)
+                    return True
+        
+        # Intentar clic directo si no está dentro de iframe
+        cf_button = await page.query_selector("#challenge-stage input, .cf-turnstile-wrapper")
+        if cf_button:
+            await cf_button.click()
+            await asyncio.sleep(2)
+            return True
+    except Exception:
+        pass
+    return False
+
+# --- 3. NAVEGACIÓN PLAYWRIGHT ---
 async def encender_aternos_playwright(status_callback=None):
     session_cookie = os.getenv("ATERNOS_SESSION")
     user_agent = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
@@ -70,9 +92,9 @@ async def encender_aternos_playwright(status_callback=None):
                 pass
 
     if not session_cookie:
-        return False, "Falta la variable `ATERNOS_SESSION` en las Environment Variables de Render. ❌"
+        return False, "Falta la variable `ATERNOS_SESSION` en las variables de entorno de Render. ❌"
 
-    await reportar("🟢 **[1/5]** Abriendo navegador y configurando sesión Zunda... 🍃")
+    await reportar("🟢 Inicializando el navegador, por favor espera... 🍃")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -118,19 +140,26 @@ async def encender_aternos_playwright(status_callback=None):
         await page.route("**/*", block_resources)
 
         try:
-            await reportar("🔎 **[2/5]** Conectando al panel de BelmoSMP en Aternos... 🌱")
+            await reportar("🌱 Conectando con el panel de Aternos...")
             target_url = f"https://aternos.org/server/{server_id}/"
             await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
 
-            # Espera de Cloudflare
-            await reportar("🛡️ **[3/5]** Verificando pase de Cloudflare y cargando scripts... ⏳💚")
-            for _ in range(10):
+            # --- ESPERA AMPLIADA Y DETECCIÓN DE CLOUDFLARE ---
+            await reportar("🛡️ Verificando seguridad y resolviendo validación, por favor espera un momento... ⌛")
+            
+            # Le damos hasta ~25 segundos probando clics intermedios
+            for i in range(16):
                 title = await page.title()
                 if "Un momento" not in title and "Just a moment" not in title and title != "":
                     break
+                
+                # Cada pocos intentos intenta hacer clic en la casilla si apareció
+                if i % 3 == 0:
+                    await intentar_clic_cloudflare(page)
+                
                 await asyncio.sleep(1.5)
 
-            await reportar("🧹 **[4/5]** Limpiando avisos y anuncios molestos de la pantalla... 🍃")
+            await reportar("🧹 Preparando la interfaz del servidor...")
             await limpiar_popups_y_adblock(page)
 
             page_title = await page.title()
@@ -138,13 +167,13 @@ async def encender_aternos_playwright(status_callback=None):
             # Comprobar si ya se está encendiendo o está Online
             estado_encendido = await page.query_selector("#stop, .statuslabel-pre-starting, .statuslabel-starting, .statuslabel-online")
             if estado_encendido:
-                return True, "¡El servidor ya se encuentra encendiéndose o ya está Online nanoda! 🟢⚡"
+                return True, "¡El servidor ya se encuentra en proceso de encendido o ya está en línea! 🟢"
 
-            await reportar("⚡ **[5/5]** Buscando el botón verde de encendido (`#start`)... 🎯")
+            await reportar("⚡ Localizando el botón de encendido (`#start`)...")
             start_exists = await page.evaluate("() => !!document.querySelector('#start')")
             
             if start_exists:
-                await reportar("👆 **¡Presionando el botón Iniciar!** En viando orden a Aternos... 🟢✨")
+                await reportar("🟢 Presionando el botón de inicio...")
                 await page.evaluate("""
                     () => {
                         document.querySelectorAll('.adblock-overlay, .fc-ab-root').forEach(el => el.remove());
@@ -165,48 +194,45 @@ async def encender_aternos_playwright(status_callback=None):
                 except Exception:
                     pass
 
-                return True, "¡Orden enviada con éxito nanoda! BelmoSMP se está encendiendo. 🟢🎮"
+                return True, "¡Solicitud enviada correctamente! BelmoSMP se está encendiendo. 🟢🎮"
 
-            return False, f"Página cargada: **'{page_title}'** (`{page.url}`). No se vio `#start`."
+            return False, f"La página no mostró el botón de inicio. Estado actual: **'{page_title}'**."
 
         except Exception as e:
-            return False, f"Error durante la navegación (`{page.url}`): {str(e)}"
+            return False, f"Error durante la conexión: `{str(e)}`"
         
         finally:
             await browser.close()
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Zundamon Bot encendido correctamente como: {bot.user} 🟢🌱")
+    print(f"🤖 Bot encendido correctamente como: {bot.user} 🟢🌱")
 
-# --- 4. COMANDO: !encender (CON MENSAJES EDITABLES EN VIVO) ---
+# --- 4. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    # Enviar mensaje inicial
-    msg = await ctx.send(f"🌱 **[Zundamon Bot]** Entendido **{ctx.author.display_name}**, iniciando proceso para **BelmoSMP**... 🍃")
+    msg = await ctx.send(f"🟢 **[BelmoSMP Bot]** Entendido **{ctx.author.display_name}**, inicializando servidor... Por favor espera. 🍃")
 
-    # Función para ir editando el mismo mensaje
     async def actualizar_mensaje(texto_nuevo):
         try:
-            await msg.edit(content=f"🌱 **[Zundamon Bot]** {texto_nuevo}")
+            await msg.edit(content=f"🟢 **[BelmoSMP Bot]** {texto_nuevo}")
         except Exception:
             pass
 
     success, result_message = await encender_aternos_playwright(status_callback=actualizar_mensaje)
 
     if success:
-        await msg.edit(content=f"🚀 **[Zundamon Bot]** {result_message} 🍃✨")
+        await msg.edit(content=f"🚀 **[BelmoSMP Bot]** {result_message} 🍃")
     else:
-        await msg.edit(content=f"❌ **[Zundamon Bot] Error al intentar encender:** {result_message}")
+        await msg.edit(content=f"❌ **[BelmoSMP Bot] Error:** {result_message}")
 
-# --- 5. COMANDO: !status (MEJORADO CON MÁS ESTADÍSTICAS Y TEMA VERDE) ---
+# --- 5. COMANDO: !status ---
 @bot.command(name="status")
 async def status(ctx):
-    msg = await ctx.send("🔎 **[Zundamon Bot]** Consultando el estado de **BelmoSMP**... 🍃")
+    msg = await ctx.send("🔎 **[BelmoSMP Bot]** Consultando estado del servidor... Por favor espera. 🍃")
 
     minecraft_ip = os.getenv("MINECRAFT_IP", "belmosmp.aternos.me")
     
-    # Tiempo activo del Bot
     uptime_seconds = int(time.time() - BOT_START_TIME)
     hours, remainder = divmod(uptime_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -222,19 +248,17 @@ async def status(ctx):
             max_players = res.get("players", {}).get("max", 0)
             version = res.get("version", "Java Edition")
             
-            # Obtener lista de nombres de jugadores si la API la entrega
             player_list = res.get("players", {}).get("list", [])
             if player_list:
                 players_formatted = ", ".join([p.get("name", "Jugador") for p in player_list])
             else:
-                players_formatted = "Nadie por ahora 😴"
+                players_formatted = "Sin jugadores conectados actualmente."
 
-            # Obtener MOTD (Descripción del Server)
             motd_raw = res.get("motd", {}).get("clean", ["¡Servidor BelmoSMP!"])
             motd_text = " ".join(motd_raw).strip() if motd_raw else "¡BelmoSMP Minecraft!"
 
             embed = discord.Embed(
-                title="🟢 ¡BelmoSMP está ONLINE nanoda!",
+                title="🟢 BelmoSMP está en línea",
                 description=f"```{motd_text}```",
                 color=ZUNDA_GREEN
             )
@@ -242,24 +266,24 @@ async def status(ctx):
             embed.add_field(name="📌 Dirección IP", value=f"`{minecraft_ip}`", inline=True)
             embed.add_field(name="👥 Jugadores", value=f"**{online_players}/{max_players}**", inline=True)
             embed.add_field(name="⚙️ Versión", value=f"`{version}`", inline=True)
-            embed.add_field(name="🎮 En Línea Ahora", value=f"{players_formatted}", inline=False)
-            embed.set_footer(text=f"Zundamon Bot Activo hace: {uptime_str} 🟢 | BelmoSMP", icon_url=bot.user.display_avatar.url)
+            embed.add_field(name="🎮 Jugadores en línea", value=f"{players_formatted}", inline=False)
+            embed.set_footer(text=f"Bot activo desde hace: {uptime_str} 🟢 | BelmoSMP", icon_url=bot.user.display_avatar.url)
             
-            await msg.edit(content="✨ **¡Servidor Listo para jugar!** 🟢", embed=embed)
+            await msg.edit(content="✨ **El servidor está listo para jugar.** 🟢", embed=embed)
 
         else:
             embed = discord.Embed(
-                title="😴 BelmoSMP está Apagado",
-                description="El servidor se encuentra **Offline** actualmente.\n\n👉 Escribe **`!encender`** para encenderlo nanoda. 🍃",
+                title="🔴 BelmoSMP está apagado",
+                description="El servidor se encuentra **offline** actualmente.\n\n👉 Puedes usar **`!encender`** para iniciarlo. 🍃",
                 color=discord.Color.red()
             )
             embed.add_field(name="📌 Dirección IP", value=f"`{minecraft_ip}`", inline=True)
-            embed.set_footer(text=f"Zundamon Bot Activo hace: {uptime_str} 🟢", icon_url=bot.user.display_avatar.url)
+            embed.set_footer(text=f"Bot activo desde hace: {uptime_str} 🟢", icon_url=bot.user.display_avatar.url)
             
-            await msg.edit(content="🔴 **Estado del Servidor:**", embed=embed)
+            await msg.edit(content="🔴 **Estado del servidor:**", embed=embed)
 
     except Exception as e:
-        await msg.edit(content=f"⚠️ **Error al consultar el status:** `{str(e)}`")
+        await msg.edit(content=f"⚠️ **Error al consultar el estado:** `{str(e)}`")
 
 # --- 6. INICIALIZACIÓN ---
 if __name__ == "__main__":
