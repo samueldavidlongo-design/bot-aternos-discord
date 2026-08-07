@@ -5,9 +5,9 @@ from threading import Thread
 from flask import Flask
 import discord
 from discord.ext import commands
-import cloudscraper
+import requests
 
-# --- 1. SERVIDOR WEB 24/7 ---
+# --- 1. SERVIDOR WEB 24/7 PARA RENDER / UPTIMEROBOT ---
 app = Flask("")
 
 @app.route("/")
@@ -27,47 +27,51 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Cargar variables de entorno
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "9b8f9cb65f804598be72dd323213327559006dbca70")
 ATERNOS_SESSION = os.getenv("ATERNOS_SESSION")
-MINECRAFT_IP = os.getenv("MINECRAFT_IP", "tu_servidor.aternos.me")
+MINECRAFT_IP = os.getenv("MINECRAFT_IP", "belmosmp.aternos.me")
 BOT_START_TIME = time.time()
+
+def scraper_get(target_url, headers=None, cookies=None):
+    """Realiza peticiones a través de ScraperAPI para saltar Cloudflare"""
+    params = {
+        'api_key': SCRAPER_API_KEY,
+        'url': target_url,
+        'keep_headers': 'true'
+    }
+    
+    req_headers = headers or {}
+    if cookies:
+        req_headers['Cookie'] = cookies
+        
+    return requests.get('http://api.scraperapi.com', params=params, headers=req_headers, timeout=30)
 
 @bot.event
 async def on_ready():
     print(f"¡Bot conectado exitosamente como {bot.user}!")
 
-# --- 3. COMANDO: !encender (Con cloudscraper - ~30MB RAM) ---
+# --- 3. COMANDO: !encender ---
 @bot.command(name="encender")
 async def encender(ctx):
-    await ctx.send(f"🌱 Dale **{ctx.author.name}**, saltando Cloudflare y enviando orden a Aternos... ⚡")
+    await ctx.send(f"🌱 Dale **{ctx.author.name}**, saltando Cloudflare con ScraperAPI y enviando orden a Aternos... ⚡")
 
     if not ATERNOS_SESSION:
-        await ctx.send("❌ Uy, falta la cookie de sesión (`ATERNOS_SESSION`) en las variables de Render.")
+        await ctx.send("❌ Uy, falta la variable `ATERNOS_SESSION` en el panel de Render.")
         return
 
     try:
-        # Crear el scraper que evade Cloudflare automáticamente
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'firefox',
-                'platform': 'windows',
-                'mobile': False
-            }
-        )
+        # Formatear la cookie
+        cookie_header = ATERNOS_SESSION if "ATERNOS_SESSION=" in ATERNOS_SESSION else f"ATERNOS_SESSION={ATERNOS_SESSION}"
 
-        # Inyectar la cookie de sesión
-        for item in ATERNOS_SESSION.split(";"):
-            if "=" in item:
-                name, val = item.strip().split("=", 1)
-                scraper.cookies.set(name, val, domain=".aternos.org")
-
-        # Paso 1: Cargar la página del panel para extraer el Token SEC interno
-        panel_res = scraper.get("https://aternos.org/server/", timeout=15)
+        # Paso 1: Obtener la página del panel para extraer el Token SEC/AJAX
+        panel_res = scraper_get("https://aternos.org/server/", cookies=cookie_header)
 
         if panel_res.status_code != 200:
-            await ctx.send(f"⚠️ Aternos devolvió código de respuesta `{panel_res.status_code}`. Es posible que Cloudflare haya bloqueado la solicitud.")
+            await ctx.send(f"⚠️ Aternos / ScraperAPI devolvió el código `{panel_res.status_code}`.")
             return
 
-        # Buscar el token 'SEC' o 'AJAX_TOKEN' en el HTML
+        # Buscar el token interno de la sesión de Aternos
         sec_match = (
             re.search(r'window\.AJAX_TOKEN\s*=\s*["\']([^"\']+)["\']', panel_res.text) or
             re.search(r'SEC\s*:\s*["\']([^"\']+)["\']', panel_res.text) or
@@ -76,32 +80,32 @@ async def encender(ctx):
 
         if not sec_match:
             await ctx.send(
-                "⚠️ No pude extraer el token de inicio. La sesión de Aternos puede haber caducado.\n"
-                "👉 Si persiste, renueva la variable `ATERNOS_SESSION` copiando la cookie más reciente desde tu navegador."
+                "⚠️ No pude extraer el token de inicio. Es probable que la cookie `ATERNOS_SESSION` haya caducado.\n"
+                "👉 Si vuelve a fallar, copia el nuevo valor de `ATERNOS_SESSION` desde tu navegador."
             )
             return
 
         sec_token = sec_match.group(1)
 
-        # Paso 2: Enviar la petición de encendido con el token obtenido
+        # Paso 2: Enviar la petición AJAX de inicio
         start_url = f"https://aternos.org/panel/ajax/start.php?head={sec_token}"
-        start_res = scraper.get(start_url, timeout=15)
+        start_res = scraper_get(start_url, cookies=cookie_header)
 
         if start_res.status_code == 200:
             try:
                 resp_json = start_res.json()
                 if resp_json.get("success"):
-                    await ctx.send("🚀 **¡Listo!** Enviada la orden de encendido para **BelmoSMP**. En un par de minutos estará online 🎮")
+                    await ctx.send("🚀 **¡Listo!** Enviada la orden de encendido para **BelmoSMP**. En unos minutos estará online 🎮")
                 else:
                     error_msg = resp_json.get("error", "Desconocido")
                     await ctx.send(f"⚠️ Aternos respondió, pero no inició. Mensaje: `{error_msg}`")
             except Exception:
-                await ctx.send("✅ Petición enviada exitosamente a Aternos. Revisa el estado con `!status` en un momento.")
+                await ctx.send("✅ Petición enviada exitosamente a Aternos. Revisa con `!status` en breve.")
         else:
-            await ctx.send(f"⚠️ Error al presionar el botón: Código HTTP `{start_res.status_code}`.")
+            await ctx.send(f"⚠️ Error al enviar la orden: Código HTTP `{start_res.status_code}`.")
 
     except Exception as e:
-        await ctx.send(f"❌ Ocurrió un error al conectar con Aternos:\n`{e}`")
+        await ctx.send(f"❌ Ocurrió un error en la conexión:\n`{e}`")
 
 # --- 4. COMANDO: !status ---
 @bot.command(name="status")
@@ -120,7 +124,6 @@ async def status(ctx):
     version = "Desconocida"
 
     try:
-        import requests
         res = requests.get(f"https://api.mcstatus.io/v2/status/java/{MINECRAFT_IP}", timeout=8).json()
         if res.get("online"):
             is_online = True
